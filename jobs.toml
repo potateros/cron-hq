@@ -1,0 +1,17 @@
+# hq job registry. Apply changes with `hq sync` (or S in the TUI).
+# Schedules: every = "30m" | at = ["06:55"]. Optional: cwd, quiet = "HH:MM-HH:MM", timeout, description.
+
+[jobs.eink-weather]
+description = "Punggol weather → nRF e-ink"
+cwd         = "~/Developer/potateros/nrf5-eink"
+command     = "uv run python -m epd.cli weather --push"
+every       = "30m"
+quiet       = "23:00-07:00"
+timeout     = "5m"
+
+[jobs.eink-wipe]
+description = "Daily full clear of the e-ink (ghosting)"
+cwd         = "~/Developer/potateros/nrf5-eink"
+command     = "uv run python -m epd.cli weather --push --wipe"
+at          = ["06:55"]
+timeout     = "5m"

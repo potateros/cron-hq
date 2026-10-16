@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Job } from "../src/config";
 import { History } from "../src/history";
@@ -103,6 +104,19 @@ describe("runJob", () => {
     expect(lines[0]).toBe("32");
     expect(log()).toContain("1\n2\n3\n");
     expect(log()).toContain("50\ntail-no-newline");
+  });
+
+  test("user tool dirs are on PATH (they live in .zshrc, which zsh -lc skips)", async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin"; // what launchd gives us
+    try {
+      await runJob(job("echo $PATH"), { manual: false, history });
+    } finally {
+      process.env.PATH = saved;
+    }
+    const path = last().tail!;
+    expect(path).toContain(`${homedir()}/.local/bin`);
+    expect(path).toContain(`${homedir()}/.bun/bin`);
   });
 
   test("log rotates past 1 MB", async () => {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import type { Job } from "./config";
 import type { History, Status, Trigger } from "./history";
@@ -61,11 +62,22 @@ function releaseLock(id: string): void {
   } catch {}
 }
 
+/**
+ * launchd starts us with PATH=/usr/bin:/bin, and `zsh -lc` only adds what ~/.zprofile sets (Homebrew).
+ * User tool dirs are usually added in ~/.zshrc, which non-interactive shells skip, so add the common ones.
+ */
+export function jobEnv(): NodeJS.ProcessEnv {
+  const home = homedir();
+  const extra = [`${home}/.local/bin`, `${home}/.bun/bin`, "/opt/homebrew/bin", "/usr/local/bin"];
+  return { ...process.env, PATH: [...extra, process.env.PATH || "/usr/bin:/bin"].join(":") };
+}
+
 /** Run the command in its own process group; resolves with exit code (null if killed by timeout). */
 function execute(job: Job, onOutput: (chunk: string) => void, killGraceMs: number) {
   return new Promise<{ code: number | null; timedOut: boolean }>((resolve) => {
     const child = spawn("/bin/zsh", ["-lc", job.command], {
       cwd: job.cwd,
+      env: jobEnv(),
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
