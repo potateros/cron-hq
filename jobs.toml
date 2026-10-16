@@ -4,7 +4,7 @@
 [jobs.eink-weather]
 description = "Punggol weather → nRF e-ink"
 cwd         = "~/Developer/potateros/nrf5-eink"
-command     = "uv run python -m epd.cli weather --push"
+command     = "uv run python -m epd.cli --push"
 every       = "30m"
 quiet       = "23:00-07:00"
 timeout     = "5m"
@@ -12,6 +12,20 @@ timeout     = "5m"
 [jobs.eink-wipe]
 description = "Daily full clear of the e-ink (ghosting)"
 cwd         = "~/Developer/potateros/nrf5-eink"
-command     = "uv run python -m epd.cli weather --push --wipe"
+command     = "uv run python -m epd.cli --push --wipe"
 at          = ["06:55"]
 timeout     = "5m"
+
+[jobs.trml-reminders]
+description = "Export macOS Reminders for the TRMNL screen"
+cwd         = "~/Developer/potateros/trml-byos"
+command     = "host/reminders-export.sh"
+every       = "5m"
+timeout     = "2m"
+
+[jobs.tailscale-watchdog]
+description = "Reconnect Tailscale if it drops"
+cwd         = "~/Developer/potateros/trml-byos"
+command     = "host/tailscale-watchdog.sh"
+every       = "1h"
+timeout     = "2m"
