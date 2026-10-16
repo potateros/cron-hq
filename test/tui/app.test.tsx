@@ -123,4 +123,22 @@ describe("App", () => {
     expect(r.lastFrame()).toContain("ENOTDIR");
     r.unmount();
   });
+
+  test("H opens help explaining the symbols; esc or H returns", async () => {
+    const r = await app();
+    r.stdin.write("h");
+    await tick();
+    const f = r.lastFrame()!;
+    expect(f).toContain("HELP");
+    for (const s of ["◉", "◆", "○", "⚠", "T–", "▁", "█", "NOMINAL", "STANDBY", "quiet", "launchd"]) expect(f).toContain(s);
+    r.stdin.write(KEY.esc);
+    await tick();
+    expect(r.lastFrame()).toContain("SYSTEMS");
+    r.stdin.write("h");
+    await tick();
+    r.stdin.write("h");
+    await tick();
+    expect(r.lastFrame()).toContain("SYSTEMS");
+    r.unmount();
+  });
 });

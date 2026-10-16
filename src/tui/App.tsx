@@ -5,6 +5,7 @@ import type { History } from "../history";
 import { defaultCtx, type Exec, planSync, type SyncPlan } from "../launchd";
 import { loadSnapshot, type Snapshot } from "../snapshot";
 import { Dashboard } from "./Dashboard";
+import { HelpView } from "./HelpView";
 import { LogView } from "./LogView";
 import { color } from "./theme";
 
@@ -16,7 +17,7 @@ export interface AppDeps {
   onExit?: () => void;
 }
 
-type Mode = { kind: "dash" } | { kind: "log"; id: string } | { kind: "sync"; plan: SyncPlan | null; error?: string };
+type Mode = { kind: "dash" } | { kind: "help" } | { kind: "log"; id: string } | { kind: "sync"; plan: SyncPlan | null; error?: string };
 
 export function App({ deps }: { deps: AppDeps }) {
   const clock = deps.clock ?? (() => new Date());
@@ -61,6 +62,10 @@ export function App({ deps }: { deps: AppDeps }) {
       if (key.escape) setMode({ kind: "dash" });
       return;
     }
+    if (mode.kind === "help") {
+      if (key.escape || k === "h") setMode({ kind: "dash" });
+      return;
+    }
     if (mode.kind === "sync") {
       if (k === "y" && mode.plan) deps.spawnCli(["sync", "--yes"]);
       setMode({ kind: "dash" });
@@ -73,6 +78,7 @@ export function App({ deps }: { deps: AppDeps }) {
       deps.spawnCli(["run", current.job.id, "--manual"]);
       setMode({ kind: "log", id: current.job.id });
     } else if (k === "p" && current) deps.spawnCli([current.held ? "resume" : "hold", current.job.id]);
+    else if (k === "h") setMode({ kind: "help" });
     else if (k === "s") {
       try {
         setMode({ kind: "sync", plan: planSync(loadConfig(), defaultCtx()) });
@@ -87,7 +93,8 @@ export function App({ deps }: { deps: AppDeps }) {
   });
 
   if (mode.kind === "log") return <LogView id={mode.id} follow />;
-  const banner = loadError ? <Text color={color.fault}>{`     ERROR — ${loadError}`}</Text> : null;
+  if (mode.kind === "help") return <HelpView />;
+  const banner = loadError ? <Text color={color.fault}>{`  ERROR — ${loadError}`}</Text> : null;
   if (!snap)
     return (
       <Box flexDirection="column">
@@ -108,7 +115,7 @@ function SyncPrompt({ mode }: { mode: Extract<Mode, { kind: "sync" }> }) {
   const { plan, error } = mode;
   const empty = plan && !plan.add.length && !plan.change.length && !plan.remove.length;
   return (
-    <Box flexDirection="column" marginLeft={5} marginTop={1}>
+    <Box flexDirection="column" marginLeft={2}>
       {error ? <Text color={color.fault}>{error}</Text> : null}
       {plan?.add.map((id) => <Text key={`a${id}`} color={color.accent}>{`+ ${id}`}</Text>)}
       {plan?.change.map((id) => <Text key={`c${id}`} color={color.body}>{`~ ${id}`}</Text>)}

@@ -24,7 +24,7 @@ hq sync [--yes]       # write/update/remove LaunchAgents to match jobs.toml
 hq uninstall          # remove all hq agents and restore the plists in migrated/
 ```
 
-TUI keys: `↑↓` select, `enter` log, `R` run now, `P` hold/resume, `S` sync (`Y` to apply), `Q` quit.
+TUI keys: `↑↓` select, `enter` log, `R` run now, `P` hold/resume, `S` sync (`Y` to apply), `H` help (what each symbol means), `Q` quit.
 In the log view: `↑↓ PgUp PgDn`, `g` top, `G` bottom, `esc` back.
 
 ## jobs.toml

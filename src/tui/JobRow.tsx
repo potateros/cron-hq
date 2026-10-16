@@ -2,7 +2,7 @@ import { Box, Text } from "ink";
 import type { JobView } from "../snapshot";
 import { formatDuration } from "../runner";
 import { describeSchedule, formatCountdown } from "../schedule";
-import { color, glyph, hhmm, isFault } from "./theme";
+import { color, glyph, hhmm, INDENT, isFault, MARGIN } from "./theme";
 
 function historyStrip(v: JobView): { mark: string; c: string }[] {
   return [...v.recent].reverse().slice(-10).map((r) =>
@@ -34,7 +34,7 @@ function detailLine(v: JobView): string {
     parts.push(`last ${hhmm(v.last.startedAt)}`);
     if (v.last.endedAt) parts.push(formatDuration(v.last.endedAt - v.last.startedAt));
   }
-  return parts.join("  ·  ");
+  return parts.join(" · ");
 }
 
 export function JobRow({ view, selected, now, width }: { view: JobView; selected: boolean; now: Date; width: number }) {
@@ -43,7 +43,7 @@ export function JobRow({ view, selected, now, width }: { view: JobView; selected
   const status = rightStatus(view, now);
   const strip = historyStrip(view);
   return (
-    <Box flexDirection="column" marginLeft={5} width={width - 5} marginBottom={1}>
+    <Box flexDirection="column" marginLeft={MARGIN} width={width}>
       <Box justifyContent="space-between">
         <Text>
           <Text color={gColor}>{g}</Text>
@@ -52,7 +52,7 @@ export function JobRow({ view, selected, now, width }: { view: JobView; selected
         <Text color={status.c}>{status.text}</Text>
       </Box>
       <Box justifyContent="space-between">
-        <Text color={color.body} dimColor={!selected}>{`   ${detailLine(view)}`}</Text>
+        <Text color={color.body} dimColor={!selected}>{`${" ".repeat(INDENT)}${detailLine(view)}`}</Text>
         <Text>
           {strip.map((s, i) => (
             <Text key={i} color={s.c}>{`${i ? " " : ""}${s.mark}`}</Text>
