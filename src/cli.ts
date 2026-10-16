@@ -1,26 +1,13 @@
 #!/usr/bin/env bun
-import { appendFileSync, existsSync, mkdirSync, readFileSync, watch } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, watch } from "node:fs";
 import { ConfigError, type Job, loadConfig } from "./config";
 import { History } from "./history";
-import { applySync, defaultCtx, type Exec, hold, label, planSync, realExec, resume, uninstall } from "./launchd";
-import { hqHome, launchAgentsDir, logPath } from "./paths";
+import { exec } from "./exec";
+import { applySync, defaultCtx, hold, label, planSync, resume, uninstall } from "./launchd";
+import { logPath } from "./paths";
 import { runJob } from "./runner";
 import { loadSnapshot, type JobView } from "./snapshot";
 
-/** HQ_FAKE_LAUNCHCTL=1: record calls instead of touching launchd (tests and dry runs). */
-const fakeExec: Exec = async (args) => {
-  mkdirSync(hqHome(), { recursive: true });
-  appendFileSync(join(hqHome(), "launchctl.calls"), `${args.join(" ")}\n`);
-  if (args[0] === "print") {
-    const id = args[1]!.split("/").pop()!;
-    return existsSync(join(launchAgentsDir(), `${id}.plist`))
-      ? { code: 0, stdout: "\tstate = not running\n", stderr: "" }
-      : { code: 113, stdout: "", stderr: "Could not find service" };
-  }
-  return { code: 0, stdout: "", stderr: "" };
-};
-export const exec: Exec = process.env.HQ_FAKE_LAUNCHCTL === "1" ? fakeExec : realExec;
 
 const hhmm = (t: number | Date | null | undefined) =>
   t == null ? "—" : new Date(t).toTimeString().slice(0, 5);
