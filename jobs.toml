@@ -13,7 +13,7 @@ timeout     = "5m"
 description = "Daily full clear of the e-ink (ghosting)"
 cwd         = "~/Developer/potateros/nrf5-eink"
 command     = "uv run python -m epd.cli --push --wipe"
-at          = ["06:55"]
+at          = ["00:01"]
 timeout     = "5m"
 
 [jobs.trml-reminders]
