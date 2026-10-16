@@ -36,7 +36,7 @@ One LaunchAgent per job, each running a wrapper (`hq run <job>`) that records hi
 ## 3. Stack and layout
 
 - Bun 1.3 + TypeScript, Ink (React for terminals), `bun:sqlite`, Bun's built-in TOML import/parse.
-- Repo: `~/Developer/potateros/hq`, installed globally with `bun link` → command `hq`. (`cc` = C compiler and `jobs` = shell builtin, so both names are taken.)
+- Repo: `~/Developer/potateros/homelab-hq`, installed globally with `bun link` → command `hq`. (`cc` = C compiler and `jobs` = shell builtin, so both names are taken.)
 
 ```
 hq/

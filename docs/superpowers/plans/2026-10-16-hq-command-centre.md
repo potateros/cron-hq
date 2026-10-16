@@ -15,7 +15,7 @@
 
 ## Global Constraints
 
-- Repo `~/Developer/potateros/hq`, branch `main`, command name `hq` via `bun link`.
+- Repo `~/Developer/potateros/homelab-hq`, branch `main`, command name `hq` via `bun link`.
 - Config: `$HQ_CONFIG` or `<repo>/jobs.toml`. Data dir: `$HQ_HOME` or `~/Library/Application Support/hq`. LaunchAgents dir: `$HQ_LAUNCH_AGENTS_DIR` or `~/Library/LaunchAgents`. **No test may touch the real dirs or real `launchctl`.**
 - Label prefix `com.chngu.hq.`; never create, modify or remove any other label except via `uninstall` restoring `migrated/` backups.
 - Job id regex `^[a-z0-9-]+$`. Keys allowed: `description, cwd, command, every, at, quiet, timeout`. Exactly one of `every`/`at`. `every` ≥ 60 s. `timeout` default `10m`. `cwd` default `~`.

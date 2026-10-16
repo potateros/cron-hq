@@ -1,4 +1,4 @@
-# hq
+# homelab-hq
 
 A terminal command centre for the small scheduled jobs on this Mac. `jobs.toml` is the registry.
 `hq sync` turns each job into a `com.chngu.hq.<id>` LaunchAgent, and every agent runs
