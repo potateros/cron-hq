@@ -1,5 +1,4 @@
-# homelab-hq
-
+# cron-hq
 A terminal command centre for the small scheduled jobs on one Mac. You list the jobs in one file, and `hq` turns them into launchd agents. Every run gets the same treatment: quiet hours, holds, overlap locks, timeouts, logs and history. You can watch it all from a dashboard in the terminal.
 
 ![hq dashboard](docs/images/dashboard.png)
