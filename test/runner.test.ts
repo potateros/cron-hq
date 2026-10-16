@@ -119,6 +119,32 @@ describe("runJob", () => {
     expect(path).toContain(`${homedir()}/.bun/bin`);
   });
 
+  test("cwd that is a file is a recorded failure, not a throw", async () => {
+    const file = join(dir, "not-a-dir");
+    writeFileSync(file, "");
+    expect(await runJob(job("echo hi", { cwd: file }), { manual: false, history })).toBe(1);
+    expect(last().status).toBe("failed");
+    expect(last().tail).toContain("not a directory");
+    expect(log()).toMatch(/── END \d{4} · FAULT · /);
+    expect(existsSync(lockPath("t"))).toBe(false);
+  });
+
+  test("a run left 'running' by a dead runner is closed by the next run", async () => {
+    const stale = history.start("t", "scheduled", Date.now() - 60_000);
+    await runJob(job("true"), { manual: false, history });
+    const row = history.recent("t", 10).find((r) => r.id === stale)!;
+    expect(row.status).toBe("failed");
+    expect(row.tail).toContain("runner died");
+    expect(row.endedAt).not.toBeNull();
+  });
+
+  test("a grandchild that escapes the group and holds the pipe does not hang the run", async () => {
+    const t0 = Date.now();
+    await runJob(job(`perl -MPOSIX -e 'fork and exit; POSIX::setsid(); sleep 20'; echo done`), { manual: false, history });
+    expect(Date.now() - t0).toBeLessThan(6000);
+    expect([last().status, last().tail]).toEqual(["ok", "done"]);
+  }, 30_000);
+
   test("log rotates past 1 MB", async () => {
     mkdirSync(dirname(logPath("t")), { recursive: true });
     writeFileSync(logPath("t"), "x".repeat(1_150_000));

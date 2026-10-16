@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { History } from "../src/history";
+import { lockPath, logPath } from "../src/paths";
 import { join } from "node:path";
 import { summarize, type Snapshot } from "../src/snapshot";
 import { tempHome } from "./helpers";
@@ -71,6 +73,33 @@ describe("cli", () => {
     const r = await hq("logs", "ok");
     expect(r.stdout).toContain("fine");
     expect(r.stdout).toContain("── RUN 0001");
+  });
+
+  test("SIGTERM to a running job finishes the run, kills the job and frees the lock", async () => {
+    const pidFile = join(dir, "pid");
+    writeFileSync(env.HQ_CONFIG!, `[jobs.slow]\ncommand = "sleep 20 & echo $! > ${pidFile}; wait"\nevery = "5m"\n`);
+    const p = Bun.spawn([process.execPath, CLI, "run", "slow", "--manual"], { env, stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await Bun.sleep(50);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    p.kill("SIGTERM");
+    await p.exited;
+    await Bun.sleep(100);
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(existsSync(lockPath("slow"))).toBe(false);
+    const row = new History().lastReal("slow")!;
+    expect(row.status).toBe("failed");
+    expect(row.tail).toContain("killed by SIGTERM");
+    expect(readFileSync(logPath("slow"), "utf8")).toMatch(/── END \d{4} · FAULT · /);
+  }, 15_000);
+
+  test("run with a broken config records a fault for that job", async () => {
+    writeFileSync(env.HQ_CONFIG!, "[jobs.ok]\ncolour = 1\n");
+    const r = await hq("run", "ok");
+    expect(r.code).toBe(1);
+    expect(readFileSync(logPath("ok"), "utf8")).toContain("jobs.ok");
+    const row = new History().lastReal("ok")!;
+    expect(row.status).toBe("failed");
+    expect(row.tail).toContain("config error");
   });
 
   test("broken config is reported, not a stack trace", async () => {

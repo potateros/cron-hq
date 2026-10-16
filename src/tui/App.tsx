@@ -26,14 +26,21 @@ export function App({ deps }: { deps: AppDeps }) {
   const [selected, setSelected] = useState(0);
   const [mode, setMode] = useState<Mode>({ kind: "dash" });
   const prev = useRef<Snapshot | undefined>(undefined);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
-      const s = await loadSnapshot({ exec: deps.exec, history: deps.history, now: clock(), previous: prev.current });
-      if (!alive) return;
-      prev.current = s;
-      setSnap(s);
+      try {
+        const s = await loadSnapshot({ exec: deps.exec, history: deps.history, now: clock(), previous: prev.current });
+        if (!alive) return;
+        prev.current = s;
+        setSnap(s);
+        setLoadError(null);
+      } catch (e) {
+        // Keep the last good picture; an unhandled rejection here would exit the whole TUI.
+        if (alive) setLoadError((e as Error).message);
+      }
     };
     void load();
     const reload = setInterval(load, 2000);
@@ -70,8 +77,8 @@ export function App({ deps }: { deps: AppDeps }) {
       try {
         setMode({ kind: "sync", plan: planSync(loadConfig(), defaultCtx()) });
       } catch (e) {
-        if (!(e instanceof ConfigError)) throw e;
-        setMode({ kind: "sync", plan: null, error: e.message });
+        const label = e instanceof ConfigError ? "CONFIG ERROR" : "ERROR";
+        setMode({ kind: "sync", plan: null, error: `${label} — ${(e as Error).message}` });
       }
     } else if (k === "q") {
       deps.onExit?.();
@@ -80,9 +87,17 @@ export function App({ deps }: { deps: AppDeps }) {
   });
 
   if (mode.kind === "log") return <LogView id={mode.id} follow />;
-  if (!snap) return <Text color={color.body}>   ◢ H Q  ·  linking…</Text>;
+  const banner = loadError ? <Text color={color.fault}>{`     ERROR — ${loadError}`}</Text> : null;
+  if (!snap)
+    return (
+      <Box flexDirection="column">
+        <Text color={color.body}>   ◢ H Q  ·  linking…</Text>
+        {banner}
+      </Box>
+    );
   return (
     <Box flexDirection="column">
+      {banner}
       <Dashboard snapshot={snap} selected={Math.min(selected, Math.max(0, jobs.length - 1))} now={now} />
       {mode.kind === "sync" ? <SyncPrompt mode={mode} /> : null}
     </Box>
@@ -94,7 +109,7 @@ function SyncPrompt({ mode }: { mode: Extract<Mode, { kind: "sync" }> }) {
   const empty = plan && !plan.add.length && !plan.change.length && !plan.remove.length;
   return (
     <Box flexDirection="column" marginLeft={5} marginTop={1}>
-      {error ? <Text color={color.fault}>{`CONFIG ERROR — ${error}`}</Text> : null}
+      {error ? <Text color={color.fault}>{error}</Text> : null}
       {plan?.add.map((id) => <Text key={`a${id}`} color={color.accent}>{`+ ${id}`}</Text>)}
       {plan?.change.map((id) => <Text key={`c${id}`} color={color.body}>{`~ ${id}`}</Text>)}
       {plan?.remove.map((id) => <Text key={`r${id}`} color={color.fault}>{`- ${id}`}</Text>)}

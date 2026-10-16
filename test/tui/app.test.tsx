@@ -103,4 +103,24 @@ describe("App", () => {
     expect(exited).toBe(true);
     r.unmount();
   });
+
+  test("a snapshot failure shows a banner instead of killing the TUI", async () => {
+    const boom: Exec = async () => {
+      throw new Error("launchctl went away");
+    };
+    const r = render(<App deps={{ exec: boom, history: new History(), spawnCli: () => {} }} />);
+    await tick(150);
+    expect(r.lastFrame()).toContain("ERROR — launchctl went away");
+    r.unmount();
+  });
+
+  test("S with an unreadable agents dir shows the error instead of crashing", async () => {
+    writeFileSync(process.env.HQ_LAUNCH_AGENTS_DIR!, "not a dir");
+    const r = await app();
+    r.stdin.write("s");
+    await tick();
+    expect(r.lastFrame()).toContain("ERROR — ");
+    expect(r.lastFrame()).toContain("ENOTDIR");
+    r.unmount();
+  });
 });

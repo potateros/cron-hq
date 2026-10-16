@@ -4,6 +4,7 @@ import { ConfigError, type Job, loadConfig } from "./config";
 import { History } from "./history";
 import { exec } from "./exec";
 import { applySync, defaultCtx, hold, label, planSync, resume, uninstall } from "./launchd";
+import { appendLog } from "./log";
 import { logPath } from "./paths";
 import { runJob } from "./runner";
 import { loadSnapshot, type JobView } from "./snapshot";
@@ -56,8 +57,21 @@ async function main(argv: string[]): Promise<number> {
       }
       return 0;
     }
-    case "run":
-      return runJob(findJob(arg), { manual: flag("--manual"), history: new History() });
+    case "run": {
+      const history = new History();
+      try {
+        return await runJob(findJob(arg), { manual: flag("--manual"), history });
+      } catch (e) {
+        if (!(e instanceof ConfigError) || !arg) throw e;
+        // Under launchd nobody sees stderr: leave the error where hq status and the log will show it.
+        const at = Date.now();
+        appendLog(arg, `hq: config error: ${e.message}\n`);
+        history.finish(history.start(arg, flag("--manual") ? "manual" : "scheduled", at), {
+          endedAt: at, exitCode: 1, status: "failed", tail: `config error: ${e.message}`,
+        });
+        throw e;
+      }
+    }
     case "logs": {
       const path = logPath(findJob(arg).id);
       let shown = existsSync(path) ? readFileSync(path, "utf8") : "";

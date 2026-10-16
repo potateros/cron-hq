@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import type { Job } from "./config";
@@ -72,39 +72,68 @@ export function jobEnv(): NodeJS.ProcessEnv {
   return { ...process.env, PATH: [...extra, process.env.PATH || "/usr/bin:/bin"].join(":") };
 }
 
+export interface Execution {
+  done: Promise<{ code: number | null; timedOut: boolean }>;
+  /** Forward a signal to the job's process group, escalating to SIGKILL after the grace period. */
+  stop: (sig: NodeJS.Signals) => void;
+}
+
+/** How long to wait for stdout/stderr to close after the shell exits (a stray grandchild may hold them). */
+const DRAIN_MS = 2000;
+
 /** Run the command in its own process group; resolves with exit code (null if killed by timeout). */
-function execute(job: Job, onOutput: (chunk: string) => void, killGraceMs: number) {
-  return new Promise<{ code: number | null; timedOut: boolean }>((resolve) => {
-    const child = spawn("/bin/zsh", ["-lc", job.command], {
-      cwd: job.cwd,
-      env: jobEnv(),
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const signal = (sig: NodeJS.Signals) => {
-      try {
-        process.kill(-child.pid!, sig);
-      } catch {}
-    };
+function execute(job: Job, onOutput: (chunk: string) => void, killGraceMs: number): Execution {
+  const child = spawn("/bin/zsh", ["-lc", job.command], {
+    cwd: job.cwd,
+    env: jobEnv(),
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const signal = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-child.pid!, sig);
+    } catch {}
+  };
+  let killTimer: Timer | undefined;
+  const stop = (sig: NodeJS.Signals) => {
+    signal(sig);
+    killTimer ??= setTimeout(() => signal("SIGKILL"), killGraceMs);
+  };
+  const done = new Promise<{ code: number | null; timedOut: boolean }>((resolve) => {
     let timedOut = false;
-    let killTimer: Timer | undefined;
+    let drainTimer: Timer | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
-      signal("SIGTERM");
-      killTimer = setTimeout(() => signal("SIGKILL"), killGraceMs);
+      stop("SIGTERM");
     }, job.timeoutSec * 1000);
+    const finish = (code: number | null) => {
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      clearTimeout(drainTimer);
+      if (timedOut) signal("SIGKILL"); // make sure no stragglers survive in the group
+      resolve({ code: timedOut ? null : code ?? 1, timedOut });
+    };
 
     child.stdout!.setEncoding("utf8").on("data", onOutput);
     child.stderr!.setEncoding("utf8").on("data", onOutput);
-    child.on("error", (e) => onOutput(`hq: failed to start: ${e.message}\n`));
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      clearTimeout(killTimer);
-      if (timedOut) signal("SIGKILL"); // make sure no stragglers survive in the group
-      resolve({ code: timedOut ? null : code ?? 1, timedOut });
+    child.on("error", (e) => {
+      onOutput(`hq: failed to start: ${e.message}\n`);
+      finish(1);
     });
+    child.on("exit", (code) => {
+      // close waits for every holder of the pipes; don't let an escaped grandchild hang us.
+      drainTimer = setTimeout(() => {
+        child.stdout!.destroy();
+        child.stderr!.destroy();
+        finish(code);
+      }, DRAIN_MS);
+    });
+    child.on("close", (code) => finish(code));
   });
+  return { done, stop };
 }
+
+const FORWARDED: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
 
 export async function runJob(job: Job, opts: RunOpts): Promise<number> {
   const now = opts.now ?? (() => new Date());
@@ -126,6 +155,7 @@ export async function runJob(job: Job, opts: RunOpts): Promise<number> {
 
   try {
     const started = now();
+    history.failStale(job.id, started.getTime(), "hq: runner died before the run finished");
     const runId = history.start(job.id, trigger, started.getTime());
     const num = pad(runId, 4);
     rotateIfNeeded(job.id); // before the header, so the current log always holds the latest run
@@ -139,14 +169,34 @@ export async function runJob(job: Job, opts: RunOpts): Promise<number> {
 
     let code: number | null;
     let status: Exclude<Status, "running" | "skipped">;
-    if (!existsSync(job.cwd)) {
-      output(`hq: working directory does not exist: ${job.cwd}\n`);
+    let killedBy: NodeJS.Signals | null = null;
+    const cwdOk = existsSync(job.cwd) && statSync(job.cwd).isDirectory();
+    if (!cwdOk) {
+      output(`hq: working directory does not exist or is not a directory: ${job.cwd}\n`);
       code = 1;
       status = "failed";
     } else {
-      const r = await execute(job, output, opts.killGraceMs ?? 10_000);
+      let r: { code: number | null; timedOut: boolean };
+      try {
+        const run = execute(job, output, opts.killGraceMs ?? 10_000);
+        // launchd sends SIGTERM on bootout (hold, sync): stop the job and still record the run.
+        const onSignal = (sig: NodeJS.Signals) => {
+          killedBy ??= sig;
+          run.stop("SIGTERM");
+        };
+        for (const sig of FORWARDED) process.on(sig, onSignal);
+        try {
+          r = await run.done;
+        } finally {
+          for (const sig of FORWARDED) process.off(sig, onSignal);
+        }
+      } catch (e) {
+        output(`hq: failed to start: ${(e as Error).message}\n`);
+        r = { code: 1, timedOut: false };
+      }
+      if (killedBy) output(`hq: killed by ${killedBy}\n`);
       code = r.code;
-      status = r.timedOut ? "timeout" : code === 0 ? "ok" : "failed";
+      status = r.timedOut ? "timeout" : code === 0 && !killedBy ? "ok" : "failed";
     }
 
     const ended = now();

@@ -64,6 +64,13 @@ export class History {
       .run(r.endedAt, r.exitCode, r.status, r.tail, id);
   }
 
+  /** Close runs still marked running; call only while holding the job's lock, so none can be live. */
+  failStale(job: string, at: number, reason: string): number {
+    return this.db
+      .query("UPDATE runs SET status = 'failed', ended_at = ?, tail = COALESCE(tail || char(10), '') || ? WHERE job = ? AND status = 'running'")
+      .run(at, reason, job).changes;
+  }
+
   skip(job: string, trigger: Trigger, reason: SkipReason, at: number): number {
     const r = this.db
       .query(
