@@ -28,4 +28,4 @@ export function configPath(): string {
   return process.env.HQ_CONFIG || join(repoRoot(), "jobs.toml");
 }
 
-export const migratedDir = () => join(repoRoot(), "migrated");
+export const migratedDir = () => process.env.HQ_MIGRATED_DIR || join(repoRoot(), "migrated");

@@ -7,5 +7,6 @@ export function tempHome(): string {
   const dir = mkdtempSync(join(tmpdir(), "hq-test-"));
   process.env.HQ_HOME = join(dir, "home");
   process.env.HQ_LAUNCH_AGENTS_DIR = join(dir, "agents");
+  process.env.HQ_MIGRATED_DIR = join(dir, "migrated");
   return dir;
 }
