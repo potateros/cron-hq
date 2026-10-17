@@ -5,6 +5,7 @@ mod history;
 mod launchd;
 mod log;
 mod paths;
+mod runner;
 mod schedule;
 mod state;
 
