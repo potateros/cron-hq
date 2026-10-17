@@ -137,7 +137,7 @@ hq uninstall              # remove every hq agent and restore the plists in migr
 | `H` | help screen |
 | `Q` | quit |
 
-The log view follows the file live. `↑↓` scroll, `PgUp`/`PgDn` page, `g`/`G` jump to the top or bottom, and `esc` goes back.
+The log view follows the file live, with a `▸` cursor on the newest line. `↑↓` move the cursor (moving up stops following), `PgUp`/`PgDn` page, `g` jumps to the top and `G` back to live. Long lines are cut with `…`: `⏎` (or space) expands the selected line in full and collapses it again, and `w` wraps every line. `esc` goes back.
 
 ![log view](docs/images/log.png)
 
