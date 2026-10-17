@@ -785,7 +785,7 @@ mod tests {
         let (mut a, fx) = (with_services(), Rec::default());
         let ls = render(&mut a);
         let row = row_of(&ls, "SERVICES");
-        let (c, r) = find(&[row.clone()], "Tab ▸");
+        let (c, r) = find(std::slice::from_ref(&row), "Tab ▸");
         let r = ls.iter().position(|l| *l == row).unwrap() as u16 + r;
         a.handle_mouse(click(c, r), &fx);
         assert_eq!(a.view, View::Services);
