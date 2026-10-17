@@ -28,7 +28,7 @@ The LaunchAgents in `~/Library/LaunchAgents` run this checkout's `src/cli.ts` on
 
 ```sh
 bun install
-bun test                                  # 90 tests; all use temp dirs + fake launchctl (test/helpers.ts tempHome())
+bun test                                  # 100 tests; all use temp dirs + fake launchctl (test/helpers.ts tempHome())
 bun test test/runner.test.ts              # one file
 bun test -t "SIGTERM"                     # by test name
 bunx tsc --noEmit                         # typecheck (known: stdout.columns/rows typing errors in Dashboard/LogView)
