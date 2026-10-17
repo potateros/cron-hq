@@ -49,6 +49,14 @@
   - TUI idle CPU ≤ 1% of a core, in the jobs view with stacks configured.
   - `hq run` memory ≤ 5 MB plus the job itself.
   - `hq status` ≤ 20 ms.
+- **Mouse support (owner requirement, 2026-10-18).** The TUI enables crossterm mouse capture and restores the terminal on exit and on panic.
+  - Left-clicking a job, log line or service row selects it. Clicking the already-selected row activates it, like ⏎: jobs open the log, log lines expand or collapse, services open their URL (like O).
+  - The scroll wheel moves the selection by 1 in the lists and scrolls the log by 3 lines.
+  - Each `<key> <label>` segment of the footer key line is clickable and acts exactly like pressing that key. That includes X, which stops or starts directly as the key does, and Z, which still asks for Y.
+  - On a Y-confirm prompt (sync, stack), clicking `Y confirm` confirms and a click anywhere else cancels.
+  - In help, any click closes it.
+  - Clicking the `Tab ▸` hint on the SERVICES line switches views.
+  - Mouse handling never bypasses a confirmation.
 - **Live system:** develop in a worktree (`../homelab-hq-rust`, branch `rust-rewrite`). Tests never touch `~/Library` and always use `tempfile` dirs and the fake launchctl. Do not run `hq sync`, `launchctl` or `hq hold`/`hq resume` against the real system, or edit the real `jobs.toml`, without the owner's go-ahead (Task 12).
 
 ## Review Focus
@@ -283,10 +291,17 @@ TS files are deleted in Task 12, after cutover, not before.
     - `pub struct App { ... }` with `App::handle_key(&mut self, KeyEvent, &dyn Effects) -> bool` (returns `false` to quit) and `App::apply(&mut self, Msg)`
     - `pub enum Msg { Snapshot(Snapshot), Agents(HashMap<..>), Stacks(Result<Vec<StackView>, String>), Usage(HashMap<..>), ActionFailed(String) }`
     - `pub fn run(paths: Paths) -> io::Result<()>`
+    - Hit regions: `pub enum Hit { Job(usize), LogLine(usize), Service(usize), Key(KeyCode), Confirm, ToggleView }`. `App` holds `hits: Vec<(Rect, Hit)>`. Each draw function clears and refills it as it lays out rows and footer segments.
+    - `App::handle_mouse(&mut self, MouseEvent, &dyn Effects) -> bool`:
+      - Left-down looks up the topmost hit containing (column, row). A click on the selected row maps to the same path as ⏎ or O, and a `Key` hit is fed through `handle_key`.
+      - ScrollUp/ScrollDown map to ↑/↓ (×3 in the log view).
+      - Any click in help closes it. A click outside `Confirm` on a prompt cancels.
+      - Mouse handling is implemented once here; the views only register hits.
 
 - [ ] **Step 1: Write the failing tests.** Port the theme-level cases (`clampLines`, `clockLine`, `formatSeconds`) from the dashboard and TS tests. Add `truncate_width_counts_display_width`: `truncate_width("ab──😀cd", 5) == "ab──…"`.
 - [ ] **Step 2: Run `cargo test tui::theme`.** Expected: FAIL.
-- [ ] **Step 3: Implement the theme and the event loop.**
+- [ ] **Step 2b: Add the mouse tests.** Add `mouse_click_dispatches_hits`: with `hits` populated by hand, a left-down inside a `Key(KeyCode::Char('q'))` rect returns `false` (quit), and a click outside every rect does nothing. Add `terminal_restored_on_panic`: the panic hook disables mouse capture and raw mode. Test the hook-install function in isolation by asserting it installs without panicking and that the restore function is idempotent.
+- [ ] **Step 3: Implement the theme and the event loop.** Turn on `EnableMouseCapture` at start, and turn it off on exit and from a panic hook.
   - `crossterm::event::poll(timeout)` waits until the next whole second.
   - On each wake:
     1. Drain the `Msg` channel.
@@ -313,6 +328,13 @@ TS files are deleted in Task 12, after cutover, not before.
   - Key handling (arrows, ⏎, R, P, S + Y, O, H, Q) is asserted through `handle_key` with a recording fake `Effects`.
   - Add `renders_tiny_terminal_without_panic`: jobs, help, log and services, each at 20×5.
   - Add `row_with_emoji_description_fits_width`: no buffer line is wider than `inner_width + MARGIN`.
+  - Add the mouse tests: render, then send events to `handle_mouse`. All coordinates come from the rendered buffer by finding the text, never hard-coded.
+    - `click_selects_job_then_opens_log`
+    - `wheel_moves_selection`
+    - `click_footer_key_runs_it` (clicking `R run` records `["run", <id>, "--manual"]`)
+    - `click_tab_hint_switches_view`
+    - `sync_prompt_click_confirm_vs_elsewhere`
+    - `click_closes_help`
 - [ ] **Step 2: Run `cargo test tui::jobs`.** Expected: FAIL.
 - [ ] **Step 3: Implement the two draw functions.**
 - [ ] **Step 4: Run `cargo test`.** Expected: PASS.
@@ -330,7 +352,7 @@ TS files are deleted in Task 12, after cutover, not before.
   - `draw_log(&mut Frame, &LogState, id)` and `LogState::handle_key(KeyEvent)`.
   - Following reads only appended bytes (from `len_seen`) and re-reads in full if the file shrank (it rotated).
 
-- [ ] **Step 1: Write the failing tests.** Port `test/tui/logview.test.tsx` (10): chunk, rowsFor, viewTop, opens LIVE, ⏎ expand and collapse, w and ↓ back to LIVE. Add `truncates_wide_chars_by_width`: a 200-column line of `─` and emoji, with the cursor on it, renders within the width and ends with `…`.
+- [ ] **Step 1: Write the failing tests.** Port `test/tui/logview.test.tsx` (10): chunk, rowsFor, viewTop, opens LIVE, ⏎ expand and collapse, w and ↓ back to LIVE. Add `truncates_wide_chars_by_width`: a 200-column line of `─` and emoji, with the cursor on it, renders within the width and ends with `…`. Add the mouse tests `click_selects_line_then_expands`, `wheel_scrolls_three_lines` and `click_on_wrapped_continuation_row_selects_its_line`.
 - [ ] **Step 2: Run `cargo test tui::logview`.** Expected: FAIL.
 - [ ] **Step 3: Implement.** `chunk` splits by display width, not by characters, so that it agrees with `truncate_width`.
 - [ ] **Step 4: Run `cargo test`.** Expected: PASS.
@@ -347,6 +369,10 @@ TS files are deleted in Task 12, after cutover, not before.
 
 - [ ] **Step 1: Write the failing tests.**
   - Port `test/tui/services.test.tsx` (6). Use the same fake docker: `stop`/`up` change the running set; actions get `timeout == None` and polls get `Some(15 s)`. Keep the same strings, e.g. `stop 2 services in LAB?  Y confirm · any key cancel`, `ERROR — lab: up -d radarr — Error: drive not mounted`.
+  - Add the mouse tests:
+    - `click_selects_service_then_opens_url`
+    - `click_footer_x_stops_service` (no confirmation, the same as the X key)
+    - `click_footer_z_still_requires_y`
   - Add `docker_missing_shows_error_tui_stays_up`: the fake docker returns `Err("docker not found")`. The services view shows `ERROR — docker not found`, and Tab, H and Q still work.
 - [ ] **Step 2: Run `cargo test tui::services`.** Expected: FAIL.
 - [ ] **Step 3: Implement.** Actions run on a spawned thread and report `Msg::ActionFailed`. A successful action wakes the stacks worker.
