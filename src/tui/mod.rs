@@ -1,7 +1,12 @@
 //! The terminal UI: event loop, `App` state, global keys, mouse dispatch and the worker threads.
 //! Views register their clickable regions in `App::hits` while drawing; everything else lives here.
 
+mod canvas;
+pub mod help;
+pub mod jobs;
 pub mod theme;
+#[cfg(test)]
+pub mod testing;
 
 use crate::config::load_config;
 use crate::history::History;
@@ -76,6 +81,8 @@ pub const PENDING_TTL: Duration = Duration::from_secs(120);
 pub enum LoopEvent {
     Input(Event),
     Msg(Msg),
+    /// The input thread can no longer read the terminal: quit instead of hanging.
+    Quit,
 }
 
 /// What worker threads and background actions report to the event loop.
@@ -128,6 +135,8 @@ pub struct App {
     pub pending: HashMap<String, (PendingKind, Instant)>,
     /// Clickable regions of the last draw; later entries are drawn on top.
     pub hits: Vec<(Rect, Hit)>,
+    /// Where `jobs.toml` and friends live; needed to plan a sync.
+    pub paths: Option<Paths>,
     pub now: DateTime<Local>,
     pub refresh: Refresh,
     /// The snapshot should be rebuilt (new agent states arrived).
@@ -161,6 +170,7 @@ impl App {
             history_error: None,
             pending: HashMap::new(),
             hits: Vec::new(),
+            paths: None,
             now,
             refresh: Refresh::default(),
             need_reload: false,
@@ -297,9 +307,6 @@ impl App {
 
     // Extension points: Tasks 8-10 fill these in.
 
-    /// Jobs dash keys: arrows, Enter, R, P, O, S.
-    fn jobs_key(&mut self, _ev: KeyEvent, _fx: &dyn Effects) {}
-
     /// Services keys: arrows, O, X, Z.
     fn services_key(&mut self, _ev: KeyEvent, _fx: &dyn Effects) {}
 
@@ -431,8 +438,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.hits.clear();
     match (&app.mode, app.view) {
         (Mode::Log(_), _) => draw_log(frame, app),
-        (Mode::Help, _) => draw_help(frame, app),
-        (_, View::Jobs) => draw_jobs(frame, app),
+        (Mode::Help, _) => help::draw_help(frame, app.view),
+        (_, View::Jobs) => jobs::draw_jobs(frame, app),
         (_, View::Services) => draw_services(frame, app),
     }
 }
@@ -441,17 +448,11 @@ fn draw_title(frame: &mut Frame, title: &str) {
     frame.render_widget(Paragraph::new(title.to_string()), frame.area());
 }
 
-fn draw_jobs(frame: &mut Frame, _app: &mut App) {
-    draw_title(frame, "HQ · JOBS");
-}
 fn draw_log(frame: &mut Frame, _app: &mut App) {
     draw_title(frame, "HQ · LOG");
 }
 fn draw_services(frame: &mut Frame, _app: &mut App) {
     draw_title(frame, "HQ · SERVICES");
-}
-fn draw_help(frame: &mut Frame, _app: &mut App) {
-    draw_title(frame, "HQ · HELP");
 }
 
 // ─── terminal ────────────────────────────────────────────────────────────────
@@ -698,12 +699,25 @@ pub fn run(paths: Paths) -> io::Result<()> {
 /// Blocking terminal reads on their own thread, so input wakes the loop the instant it arrives.
 fn spawn_input_thread(tx: Sender<LoopEvent>) {
     let _ = std::thread::Builder::new().name("input".into()).spawn(move || {
-        while let Ok(ev) = event::read() {
-            if tx.send(LoopEvent::Input(ev)).is_err() {
+        pump_input(event::read, &tx);
+    });
+}
+
+/// Forward terminal events until the channel closes; a read error ends the session with a quit.
+fn pump_input(mut read: impl FnMut() -> io::Result<Event>, tx: &Sender<LoopEvent>) {
+    loop {
+        match read() {
+            Ok(ev) => {
+                if tx.send(LoopEvent::Input(ev)).is_err() {
+                    break;
+                }
+            }
+            Err(_) => {
+                let _ = tx.send(LoopEvent::Quit);
                 break;
             }
         }
-    });
+    }
 }
 
 fn mode_sig(app: &App) -> (View, std::mem::Discriminant<Mode>, Option<String>) {
@@ -714,6 +728,7 @@ fn mode_sig(app: &App) -> (View, std::mem::Discriminant<Mode>, Option<String>) {
 /// Handle one event. Returns false to quit.
 fn handle_event(app: &mut App, ev: LoopEvent, fx: &dyn Effects, stale_mouse: &mut bool) -> bool {
     match ev {
+        LoopEvent::Quit => return false,
         LoopEvent::Msg(m) => app.apply(m),
         LoopEvent::Input(Event::Key(k)) if k.kind != KeyEventKind::Release => {
             let before = mode_sig(app);
@@ -749,6 +764,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Pat
     let (mut history, open_err) = open_history(paths);
     let mut app = App::new(Local::now());
     app.history_open_error = open_err;
+    app.paths = Some(paths.clone());
     // Agent states before the first frame, so jobs do not flash as unlinked.
     if let Ok(jobs) = load_config(&paths.config) {
         app.agents = fetch_agents(&jobs, launchctl_from_env(paths).as_ref());
@@ -823,24 +839,8 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Pat
 mod tests {
     use super::*;
     use crossterm::event::KeyEventState;
-    use std::cell::RefCell;
 
-    #[derive(Default)]
-    struct Rec {
-        cli: RefCell<Vec<Vec<String>>>,
-        opened: RefCell<Vec<String>>,
-    }
-    impl Effects for Rec {
-        fn spawn_cli(&self, args: &[&str]) {
-            self.cli.borrow_mut().push(args.iter().map(|s| s.to_string()).collect());
-        }
-        fn open(&self, url: &str) {
-            self.opened.borrow_mut().push(url.to_string());
-        }
-        fn docker(&self) -> Arc<dyn Docker> {
-            Arc::new(RealDocker)
-        }
-    }
+    use crate::tui::testing::Rec;
 
     fn app() -> App {
         App::new(Local::now())
@@ -951,16 +951,43 @@ mod tests {
     #[test]
     fn scroll_maps_to_arrow_keys() {
         let (mut a, fx) = (app(), Rec::default());
-        // NOTE: Task 8 should strengthen this: once jobs_key/log_key move the selection, assert Up/Down x1 (x3 in
-        // the log). No view keys exist yet, so observe via a mode the global handler reacts to: help ignores scroll,
-        // dash forwards it. Both must simply not panic or quit.
+        a.snap = Some(crate::tui::testing::snapshot());
+        assert!(a.handle_mouse(scroll(false), &fx));
+        assert_eq!(a.selected, 1, "wheel down = Down x1 in the jobs list");
+        assert!(a.handle_mouse(scroll(false), &fx));
+        assert_eq!(a.selected, 2);
         assert!(a.handle_mouse(scroll(true), &fx));
+        assert_eq!(a.selected, 1, "wheel up = Up x1");
+        // The log's x3 scroll is asserted in Task 9, once `log_key` exists; here it must not leave the log.
         a.mode = Mode::Log("x".into());
         assert!(a.handle_mouse(scroll(false), &fx));
         assert!(matches!(a.mode, Mode::Log(_)));
         a.mode = Mode::Help;
         assert!(a.handle_mouse(scroll(true), &fx));
         assert!(matches!(a.mode, Mode::Help));
+        assert_eq!(a.selected, 1, "help ignores the wheel");
+    }
+
+    #[test]
+    fn input_read_error_quits_instead_of_exiting_silently() {
+        let (tx, rx) = mpsc::channel();
+        let mut n = 0;
+        pump_input(
+            || {
+                n += 1;
+                if n == 1 {
+                    Ok(Event::Resize(1, 1))
+                } else {
+                    Err(io::Error::other("tty gone"))
+                }
+            },
+            &tx,
+        );
+        assert!(matches!(rx.try_recv(), Ok(LoopEvent::Input(Event::Resize(1, 1)))));
+        let ev = rx.try_recv().unwrap();
+        assert!(matches!(ev, LoopEvent::Quit));
+        let (mut a, fx) = (app(), Rec::default());
+        assert!(!handle_event(&mut a, ev, &fx, &mut false));
     }
 
     #[test]
