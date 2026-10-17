@@ -13,6 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
+use std::collections::HashMap;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
@@ -127,9 +128,10 @@ enum Item<'a> {
     Svc(&'a ServiceView, usize),
 }
 
-/// How many services a Z answered with Y would touch.
-fn stack_targets(view: &StackView, start: bool) -> Vec<&ServiceView> {
-    view.services.iter().filter(|v| is_up(v) != start).collect()
+/// The services a Z answered with Y would touch: those not already in the wanted state and not already
+/// being started or stopped (a repeated Z+Y must not fire compose twice).
+fn stack_targets<'a>(view: &'a StackView, start: bool, pending: &HashMap<String, (PendingKind, Instant)>) -> Vec<&'a ServiceView> {
+    view.services.iter().filter(|v| is_up(v) != start && !pending.contains_key(&service_key(&v.stack, &v.service))).collect()
 }
 
 fn find_stack<'a>(stacks: &'a Option<Vec<StackView>>, name: &str) -> Option<&'a StackView> {
@@ -158,7 +160,7 @@ pub fn draw_services(frame: &mut Frame, app: &mut App) {
     let prompt = match &app.mode {
         Mode::Stack { stack, start } => find_stack(&app.stacks, stack).map(|view| {
             let verb = if *start { "start" } else { "stop" };
-            format!("{verb} {} services in {}?  Y confirm · any key cancel", stack_targets(view, *start).len(), stack.to_uppercase())
+            format!("{verb} {} services in {}?  Y confirm · any key cancel", stack_targets(view, *start, &app.pending).len(), stack.to_uppercase())
         }),
         _ => None,
     };
@@ -325,7 +327,11 @@ impl App {
         let Mode::Stack { stack, start } = &self.mode else { return };
         let start = *start;
         let Some(view) = find_stack(&self.stacks, stack) else { return };
-        let keys: Vec<String> = stack_targets(view, start).iter().map(|v| service_key(&v.stack, &v.service)).collect();
+        // Every target already in flight: nothing to do (the prompt said "0 services").
+        let keys: Vec<String> = stack_targets(view, start, &self.pending).iter().map(|v| service_key(&v.stack, &v.service)).collect();
+        if keys.is_empty() {
+            return;
+        }
         let s = view.stack.clone();
         let (rest, kind) = if start {
             (vec!["up".to_string(), "-d".to_string()], PendingKind::Starting)
@@ -669,6 +675,19 @@ mod tests {
         h.key(ch('x'));
         assert!(h.app.action_error.is_none());
         h.settle();
+    }
+
+    #[test]
+    fn repeated_z_y_while_in_flight_does_not_refire_compose() {
+        let mut h = H::on_services(Fake::new(&["jellyfin", "radarr"]));
+        h.key(ch('z'));
+        h.key(ch('y'));
+        h.key(ch('z'));
+        assert!(h.text().contains("stop 0 services in LAB?"), "pending targets are not counted");
+        h.key(ch('y'));
+        h.settle();
+        assert_eq!(h.fake.actions(), vec![vec!["stop".to_string()]], "compose ran once");
+        assert!(h.rx.try_recv().is_err(), "the second Y spawned nothing");
     }
 
     #[test]

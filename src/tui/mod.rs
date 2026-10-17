@@ -96,6 +96,9 @@ pub enum Msg {
     ActionDone,
     /// A compose start/stop (or a worker) failed: the message, and the pending keys to forget.
     ActionFailed(String, Vec<String>),
+    /// A worker thread panicked. Shown as the error banner; deliberately triggers no refresh, so a job that
+    /// always panics cannot spin (ruling R23).
+    WorkerFailed(String),
 }
 
 /// Side effects the keys can ask for; faked in tests.
@@ -220,6 +223,7 @@ impl App {
                 }
             }
             Msg::Usage(u) => self.usage = u,
+            Msg::WorkerFailed(e) => self.action_error = Some(e),
             Msg::ActionDone => self.refresh.stacks = true,
             Msg::ActionFailed(e, keys) => {
                 self.action_error = Some(e);
@@ -440,7 +444,7 @@ impl Effects for RealEffects {
     }
 }
 
-// ─── drawing ───────────────────────
+// ─── drawing ─────────────────────────────────────────────────────────────────
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.hits.clear();
@@ -591,7 +595,7 @@ fn spawn_worker(ctl: Arc<Control>, idx: usize, tx: Sender<LoopEvent>, start_now:
                 }
             }
             if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut job)) {
-                let _ = tx.send(LoopEvent::Msg(Msg::ActionFailed(format!("worker panicked: {}", panic_text(p)), Vec::new())));
+                let _ = tx.send(LoopEvent::Msg(Msg::WorkerFailed(format!("worker panicked: {}", panic_text(p)))));
             }
             last = Some(Instant::now());
         }
@@ -1060,13 +1064,25 @@ mod tests {
     }
 
     #[test]
+    fn worker_failure_shows_the_error_and_never_pokes() {
+        let mut a = app();
+        a.pending.insert("s/x".into(), (PendingKind::Starting, Instant::now()));
+        a.apply(Msg::WorkerFailed("worker panicked: boom".into()));
+        assert_eq!(a.action_error.as_deref(), Some("worker panicked: boom"));
+        assert!(!a.refresh.stacks && !a.refresh.agents, "no immediate re-run, so a panicking job cannot spin");
+        assert_eq!(a.pending.len(), 1);
+        a.apply(Msg::ActionFailed("lab: stop x — e".into(), vec!["s/x".into()]));
+        assert!(a.refresh.stacks && a.pending.is_empty(), "compose failures still refresh");
+    }
+
+    #[test]
     fn worker_panic_becomes_an_error_message() {
         let ctl = Control::new();
         let (tx, rx) = mpsc::channel();
         spawn_worker(ctl.clone(), USAGE, tx, true, || panic!("kaboom"));
         match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(LoopEvent::Msg(Msg::ActionFailed(m, _))) => assert!(m.contains("kaboom"), "{m}"),
-            _ => panic!("expected ActionFailed"),
+            Ok(LoopEvent::Msg(Msg::WorkerFailed(m))) => assert!(m.contains("kaboom"), "{m}"),
+            _ => panic!("expected WorkerFailed"),
         }
         ctl.quit();
     }
