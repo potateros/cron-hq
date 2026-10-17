@@ -42,14 +42,15 @@ export async function loadSnapshot(deps: { exec: Exec; history: History; now: Da
       const agent = await agentState(job.id, deps.exec);
       const path = join(launchAgentsDir(), `${label(job.id)}.plist`);
       const isHeld = held.has(job.id);
-      const plistMatches = existsSync(path) && readFileSync(path, "utf8") === renderPlist(job, ctx);
+      const manual = job.schedule.kind === "manual";
+      const plistMatches = manual || (existsSync(path) && readFileSync(path, "utf8") === renderPlist(job, ctx));
       const recent = deps.history.recent(job.id, 10);
       const lastStart = recent[0] ? new Date(recent[0].startedAt) : null;
       return {
         job,
         held: isHeld,
         agent,
-        synced: plistMatches && (agent.linked || isHeld),
+        synced: manual || (plistMatches && (agent.linked || isHeld)),
         last: deps.history.lastReal(job.id),
         recent,
         running: recent[0]?.status === "running",

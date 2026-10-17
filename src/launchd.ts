@@ -36,6 +36,7 @@ export function defaultCtx(): PlistCtx {
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export function renderPlist(job: Job, ctx: PlistCtx): string {
+  if (job.schedule.kind === "manual") throw new Error(`${job.id} is manual: it has no LaunchAgent`);
   const launchdLog = join(ctx.hqHome ?? hqHome(), "logs", "_launchd.log");
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -51,7 +52,7 @@ export function renderPlist(job: Job, ctx: PlistCtx): string {
   ];
   if (job.schedule.kind === "every") {
     lines.push("  <key>StartInterval</key>", `  <integer>${job.schedule.seconds}</integer>`);
-  } else {
+  } else if (job.schedule.kind === "at") {
     lines.push("  <key>StartCalendarInterval</key>", "  <array>");
     for (const t of job.schedule.times) {
       lines.push(
@@ -111,7 +112,8 @@ export interface SyncPlan {
   remove: string[];
 }
 
-export function planSync(jobs: Job[], ctx: PlistCtx): SyncPlan {
+export function planSync(all: Job[], ctx: PlistCtx): SyncPlan {
+  const jobs = all.filter((j) => j.schedule.kind !== "manual"); // on-demand jobs have no agent
   const installed = new Set(installedIds());
   const plan: SyncPlan = { add: [], change: [], remove: [] };
   for (const job of jobs) {
@@ -151,6 +153,7 @@ export async function hold(id: string, exec: Exec): Promise<void> {
 }
 
 export async function resume(job: Job, ctx: PlistCtx, exec: Exec): Promise<void> {
+  if (job.schedule.kind === "manual") return setPaused(job.id, false);
   mkdirSync(launchAgentsDir(), { recursive: true });
   if (!existsSync(plistPath(job.id))) writeFileSync(plistPath(job.id), renderPlist(job, ctx));
   await bootstrap(plistPath(job.id), exec);

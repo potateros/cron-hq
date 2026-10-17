@@ -80,8 +80,9 @@ Each job is a `[jobs.<id>]` table. The id must match `[a-z0-9-]+`, and its Launc
 | key | required | format | default / notes |
 |---|---|---|---|
 | `command` | yes | string | run as `/bin/zsh -lc '<command>'` from `cwd` |
-| `every` | one of `every`/`at` | `"90s"`, `"30m"`, `"1h"` | at least 60 s; becomes launchd `StartInterval` |
-| `at` | one of `every`/`at` | `["06:55", "19:30"]` | local time; becomes launchd `StartCalendarInterval` |
+| `every` | one of `every`/`at`/`manual` | `"90s"`, `"30m"`, `"1h"` | at least 60 s; becomes launchd `StartInterval` |
+| `at` | one of `every`/`at`/`manual` | `["06:55", "19:30"]` | local time; becomes launchd `StartCalendarInterval` |
+| `manual` | one of `every`/`at`/`manual` | `true` | on demand: no LaunchAgent, never scheduled, listed first, shows `ON DEMAND · R`; `R` (or `hq run <job> --manual`) runs it. Good for launchers. No `quiet` |
 | `cwd` | no | path, `~` allowed | `$HOME`; must be a directory |
 | `quiet` | no | `"23:00-07:00"` | scheduled runs inside it are skipped; can wrap midnight; manual runs still go |
 | `timeout` | no | `"5m"` | `10m`; then SIGTERM to the process group, and SIGKILL 10 s later |
@@ -93,8 +94,9 @@ The jobs in this repo:
 
 | job | schedule | what it does |
 |---|---|---|
-| `eink-weather` | every 30m, quiet 23:00–07:00 | pushes the current layout to the nRF52 e-ink tag ([nrf5-eink](https://github.com/potateros/nrf5-eink)) |
-| `eink-wipe` | daily 06:55 | does the same push with a full CLEAR first, to remove ghosting |
+| `eink-tool` | on demand | opens the e-ink web tool (starts it in the background if needed; it stops itself 10 min after its tab closes) |
+| `eink-dashboard-1` | every 30m, quiet 23:00–07:00 | pushes the current layout to the nRF52 e-ink tag ([nrf5-eink](https://github.com/potateros/nrf5-eink)) |
+| `eink-dashboard-1-midnight` | daily 00:01 | the same push, right after the firmware's midnight calendar redraw, so the dashboard shows overnight |
 | `trml-reminders` | every 5m | exports macOS Reminders for the TRMNL screen (trml-byos) |
 | `tailscale-watchdog` | every 1h | reconnects Tailscale if it has stopped |
 

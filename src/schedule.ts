@@ -16,8 +16,9 @@ function quietEndAfter(q: QuietWindow, t: Date): Date {
   return end;
 }
 
-export function nextRun(job: Job, lastStart: Date | null, now: Date): Date {
+export function nextRun(job: Job, lastStart: Date | null, now: Date): Date | null {
   const s = job.schedule;
+  if (s.kind === "manual") return null;
   if (s.kind === "every") {
     let next = lastStart ? new Date(lastStart.getTime() + s.seconds * 1000) : null;
     if (!next || next <= now) next = new Date(now.getTime() + s.seconds * 1000);
@@ -46,6 +47,7 @@ export function formatCountdown(ms: number): string {
 }
 
 export function describeSchedule(s: Schedule): string {
+  if (s.kind === "manual") return "on demand";
   if (s.kind === "at") return `daily ${s.times.map((t) => `${pad(t.hour)}:${pad(t.minute)}`).join(", ")}`;
   if (s.seconds % 3600 === 0) return `every ${s.seconds / 3600}h`;
   if (s.seconds % 60 === 0) return `every ${s.seconds / 60}m`;

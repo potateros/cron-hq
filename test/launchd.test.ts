@@ -49,6 +49,13 @@ describe("renderPlist", () => {
 
 describe("planSync", () => {
   test("empty dir → add all", () => expect(planSync([every, at], ctx)).toEqual({ add: ["eink", "wipe"], change: [], remove: [] }));
+  test("manual jobs get no agent, and a stale one is removed", () => {
+    const tool: Job = { ...every, id: "tool", schedule: { kind: "manual" } };
+    expect(planSync([every, tool], ctx)).toEqual({ add: ["eink"], change: [], remove: [] });
+    writeFileSync(plistFile("tool"), "<plist/>");
+    expect(planSync([every, tool], ctx).remove).toEqual(["tool"]);
+    expect(() => renderPlist(tool, ctx)).toThrow("manual");
+  });
   test("detects change, removal, and ignores foreign labels", () => {
     writeFileSync(plistFile("eink"), renderPlist({ ...every, schedule: { kind: "every", seconds: 60 } }, ctx));
     writeFileSync(plistFile("wipe"), renderPlist(at, ctx));

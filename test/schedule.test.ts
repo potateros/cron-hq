@@ -9,6 +9,12 @@ const job = (over: Partial<Job>): Job => ({
   schedule: { kind: "every", seconds: 1800 }, ...over,
 });
 
+describe("manual", () => {
+  const m = job({ schedule: { kind: "manual" } });
+  test("never has a next run", () => expect(nextRun(m, null, d(16, 17, 0))).toBeNull());
+  test("described as on demand", () => expect(describeSchedule(m.schedule)).toBe("on demand"));
+});
+
 describe("inQuiet", () => {
   test("wrapping window 23:00-07:00", () => {
     for (const [h, m] of [[23, 0], [2, 0], [6, 59]] as const) expect(inQuiet(NIGHT, d(16, h, m))).toBe(true);

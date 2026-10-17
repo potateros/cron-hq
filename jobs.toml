@@ -1,18 +1,25 @@
 # hq job registry. Apply changes with `hq sync` (or S in the TUI).
-# Schedules: every = "30m" | at = ["06:55"]. Optional: cwd, quiet = "HH:MM-HH:MM", timeout, description.
+# Schedules: every = "30m" | at = ["06:55"] | manual = true (on demand: R in the TUI). Optional: cwd, quiet = "HH:MM-HH:MM", timeout, description.
 
-[jobs.eink-weather]
-description = "Punggol weather → nRF e-ink (auto: rain if heavy rain ahead, else proverb)"
+[jobs.eink-tool]
+description = "Launch E-Ink Tool (local web page: pictures, slots, modes; stops 10 min after its tab closes)"
 cwd         = "~/Developer/potateros/nrf5-eink"
-command     = "uv run python -m epd.cli --push"
+command     = "uv run eink web --background"
+manual      = true
+timeout     = "1m"
+
+[jobs.eink-dashboard-1]
+description = "Push the e-ink layout set in nrf5-eink config.toml (uv run eink use <layout>)"
+cwd         = "~/Developer/potateros/nrf5-eink"
+command     = "uv run eink --push"
 every       = "30m"
 quiet       = "23:00-07:00"
 timeout     = "5m"
 
-[jobs.eink-wipe]
-description = "Daily full clear of the e-ink (ghosting)"
+[jobs.eink-dashboard-1-midnight]
+description = "Re-push the dashboard after the firmware's midnight calendar redraw (overnight view)"
 cwd         = "~/Developer/potateros/nrf5-eink"
-command     = "uv run python -m epd.cli --push --wipe"
+command     = "uv run eink --push"
 at          = ["00:01"]
 timeout     = "5m"
 

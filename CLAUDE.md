@@ -41,7 +41,7 @@ HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 bun src/cli.ts   # TUI against an empty
 ## Architecture
 
 - `src/cli.ts`: command dispatch. The commands are `status`, `run`, `logs`, `hold`, `resume`, `sync` and `uninstall`; with no command it opens the TUI. A `ConfigError` gives a one-line message and exit code 1. `run` also records a config error as a failed run, so faults are visible under launchd.
-- `src/config.ts`: strict `jobs.toml` parsing (`Bun.TOML`). Any unknown key, a bad duration, both or neither of `every`/`at`, or a bad id gives `ConfigError("jobs.<id>: …")`. The runner re-reads it every run.
+- `src/config.ts`: strict `jobs.toml` parsing (`Bun.TOML`). Any unknown key, a bad duration, both or neither of `every`/`at` (unless `manual = true`, which takes neither: an on-demand job with no LaunchAgent, sorted first), or a bad id gives `ConfigError("jobs.<id>: …")`. The runner re-reads it every run.
 - `src/runner.ts` (`runJob`):
   1. Checks hold, then quiet hours, then the overlap lock; each skip is recorded with its reason.
   2. `failStale` closes rows that a dead runner left `running`.

@@ -12,6 +12,7 @@ const SECTIONS: [title: string, rows: Row[]][] = [
     ["⚠", "not synced — launchd differs from jobs.toml; press S", color.fault],
     ["RUNNING", "a run is in progress"],
     ["T–hh:mm:ss", "countdown to the next scheduled run"],
+    ["ON DEMAND · R", "manual = true: never scheduled, R runs it"],
   ]],
   ["SUMMARY", [
     ["SYSTEMS", "jobs in jobs.toml"],

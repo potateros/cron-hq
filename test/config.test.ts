@@ -68,4 +68,14 @@ describe("parseConfig", () => {
   test("rejects missing command", () => expectConfigError('[jobs.nocmd]\nevery = "5m"\n', "nocmd", "command"));
   test("rejects bad at time", () => expectConfigError(one('at = ["25:00"]'), "25:00"));
   test("invalid TOML → ConfigError", () => expectConfigError("[jobs.x\ncommand = ", "TOML"));
+
+  test("manual job: no schedule, sorted first", () => {
+    const jobs = parseConfig(one('every = "5m"', "a-sched") + one("manual = true", "z-tool"));
+    expect(jobs.map((j) => j.id)).toEqual(["z-tool", "a-sched"]);
+    expect(jobs[0]!.schedule).toEqual({ kind: "manual" });
+  });
+  test("manual = false still needs a schedule", () => expectConfigError(one("manual = false"), "neither"));
+  test("rejects manual with every", () => expectConfigError(one('manual = true\nevery = "5m"'), "manual"));
+  test("rejects manual with quiet", () => expectConfigError(one('manual = true\nquiet = "23:00-07:00"'), "quiet"));
+  test("rejects non-boolean manual", () => expectConfigError(one('manual = "yes"'), "manual"));
 });

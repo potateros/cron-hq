@@ -17,6 +17,9 @@ function historyStrip(v: JobView): { mark: string; c: string }[] {
 function rightStatus(v: JobView, now: Date): { text: string; c: string } {
   if (v.held) return { text: "HOLD", c: color.hold };
   if (v.running) return { text: "RUNNING", c: color.accent };
+  if (v.job.schedule.kind === "manual")
+    return isFault(v) ? { text: `FAULT · ${v.last!.status === "timeout" ? "TIMEOUT" : `EXIT ${v.last!.exitCode}`}   R to retry`, c: color.fault }
+      : { text: "ON DEMAND · R", c: color.body };
   const countdown = v.next ? formatCountdown(v.next.getTime() - now.getTime()) : "";
   if (!v.synced) return { text: `⚠ NOT SYNCED   ${countdown}`.trimEnd(), c: color.fault };
   if (isFault(v)) {

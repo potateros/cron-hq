@@ -9,7 +9,8 @@ export interface QuietWindow {
 
 export type Schedule =
   | { kind: "every"; seconds: number }
-  | { kind: "at"; times: { hour: number; minute: number }[] };
+  | { kind: "at"; times: { hour: number; minute: number }[] }
+  | { kind: "manual" }; // on demand only: no LaunchAgent, runs when you press R
 
 export interface Job {
   id: string;
@@ -26,7 +27,7 @@ export class ConfigError extends Error {
 }
 
 const ID_RE = /^[a-z0-9-]+$/;
-const KEYS = new Set(["description", "cwd", "command", "every", "at", "quiet", "timeout"]);
+const KEYS = new Set(["description", "cwd", "command", "every", "at", "manual", "quiet", "timeout"]);
 const UNIT = { s: 1, m: 60, h: 3600 } as const;
 
 export function parseDuration(s: string): number {
@@ -82,11 +83,19 @@ function parseJob(id: string, raw: Record<string, unknown>): Job {
 
   const every = str("every");
   const at = raw.at;
-  if (every !== undefined && at !== undefined) fail("set either every or at, not both");
-  if (every === undefined && at === undefined) fail("set every or at (neither is set)");
+  const manual = raw.manual;
+  if (manual !== undefined && typeof manual !== "boolean") fail("manual must be true or false");
 
   let schedule: Schedule;
-  if (every !== undefined) {
+  if (manual === true) {
+    if (every !== undefined || at !== undefined) fail("a manual job has no every or at");
+    if (raw.quiet !== undefined) fail("quiet has no effect on a manual job");
+    schedule = { kind: "manual" };
+  } else if (every !== undefined && at !== undefined) {
+    return fail("set either every or at, not both");
+  } else if (every === undefined && at === undefined) {
+    return fail("set every or at (neither is set), or manual = true");
+  } else if (every !== undefined) {
     const seconds = wrap("every", () => parseDuration(every));
     if (seconds < 60) fail("every must be at least 60s");
     schedule = { kind: "every", seconds };
@@ -120,7 +129,8 @@ export function parseConfig(text: string): Job[] {
   const jobs = (doc.jobs ?? {}) as Record<string, Record<string, unknown>>;
   return Object.entries(jobs)
     .map(([id, raw]) => parseJob(id, raw))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    // on-demand jobs first: they're launchers, the rest is the schedule
+    .sort((a, b) => Number(b.schedule.kind === "manual") - Number(a.schedule.kind === "manual") || a.id.localeCompare(b.id));
 }
 
 export function loadConfig(path = configPath()): Job[] {

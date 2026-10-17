@@ -19,9 +19,9 @@ Get these from the user or the project. Ask only for what you can't infer:
 
 | key | required | format | notes |
 |---|---|---|---|
-| id (table name) | yes | `[a-z0-9-]+` | becomes `[jobs.<id>]`; prefix by project, e.g. `eink-weather`, `trml-reminders` |
+| id (table name) | yes | `[a-z0-9-]+` | becomes `[jobs.<id>]`; prefix by project, e.g. `eink-dashboard-1`, `trml-reminders` |
 | `command` | yes | string | run with `/bin/zsh -lc` from `cwd` |
-| `every` **or** `at` | exactly one | `every = "30m"` (`Ns`/`Nm`/`Nh`, min 60s) · `at = ["06:55", "19:30"]` | both or neither is an error |
+| `every` **or** `at` **or** `manual` | exactly one | `every = "30m"` (`Ns`/`Nm`/`Nh`, min 60s) · `at = ["06:55", "19:30"]` · `manual = true` | both or neither is an error. `manual = true` = on demand (no LaunchAgent, R in the TUI runs it, listed first; no `quiet`): for launchers |
 | `cwd` | no | path, `~` ok | defaults to `$HOME`; must be a directory |
 | `quiet` | no | `"HH:MM-HH:MM"` | scheduled runs inside it are skipped (wraps midnight); manual runs still go |
 | `timeout` | no | `"5m"` | default 10m; SIGTERM, then SIGKILL 10 s later |
@@ -75,4 +75,4 @@ Only do this when running the job is harmless, e.g. it doesn't push to a device 
 
 - Don't schedule anything faster than every 60s; hq rejects it.
 - Don't run `hq uninstall` unless asked. It removes **every** hq agent and restores the migrated plists.
-- Don't give two jobs that use the same exclusive resource overlapping schedules. Locks are per job, so overlapping runs would collide. Example: the e-ink BLE device is shared by `eink-weather` and `eink-wipe`.
+- Don't give two jobs that use the same exclusive resource overlapping schedules. Locks are per job, so overlapping runs would collide. Example: the e-ink BLE device is shared by `eink-dashboard-1`, `eink-dashboard-1-midnight` and anything run from `eink-tool`.
