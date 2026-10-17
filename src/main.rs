@@ -59,21 +59,32 @@ fn find_job(paths: &Paths, id: Option<&str>) -> Result<Job, i32> {
     jobs.into_iter().find(|j| Some(j.id.as_str()) == id).ok_or_else(|| fail(format!("unknown job {}", id.unwrap_or("(none)")), 2))
 }
 
-fn open_history(paths: &Paths) -> (History, Option<String>) {
+/// The history plus the reason the real database could not be opened. When even the in-memory
+/// fallback fails there is no history at all and the error is the whole story.
+fn open_history(paths: &Paths) -> (Option<History>, Option<String>) {
     match History::open(&paths.db()) {
-        Ok(h) => (h, None),
+        Ok(h) => (Some(h), None),
         Err(e) => match History::in_memory() {
-            Ok(h) => (h, Some(e.to_string())),
-            Err(e2) => {
-                eprintln!("hq: history unavailable: {e}; {e2}");
-                std::process::exit(1);
-            }
+            Ok(h) => (Some(h), Some(e.to_string())),
+            Err(e2) => (None, Some(format!("{e}; {e2}"))),
         },
     }
 }
 
+/// Writes one line to stdout. Err carries the exit code: a closed pipe (`hq status | head -1`) is a quiet 0.
+fn emit(line: &str) -> Result<(), i32> {
+    match writeln!(std::io::stdout().lock(), "{line}") {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Err(0),
+        Err(e) => Err(fail(e, 1)),
+    }
+}
+
 fn status(paths: &Paths, json: bool) -> i32 {
-    let (history, _) = open_history(paths);
+    let (history, open_err) = open_history(paths);
+    let Some(history) = history else {
+        return fail(format!("history unavailable: {}", open_err.unwrap_or_default()), 1);
+    };
     let lc = launchctl_from_env(paths);
     let jobs = load_config(&paths.config).unwrap_or_default();
     let agents = fetch_agents(&jobs, lc.as_ref());
@@ -81,22 +92,31 @@ fn status(paths: &Paths, json: bool) -> i32 {
     if let Some(e) = snap.config_error {
         return fail(e, 1);
     }
-    if json {
-        let v = serde_json::Value::Array(snap.jobs.iter().map(JobView::to_json).collect());
-        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
-    } else {
-        let w = snap.jobs.iter().map(|v| v.job.id.chars().count()).max().unwrap_or(0).max(4);
-        for v in &snap.jobs {
-            println!(
-                "{}  {}  last {}  next {}",
-                pad(&v.job.id, w),
-                pad(status_word(v), 5),
-                hhmm(v.last.as_ref().map(|r| r.started_at)),
-                hhmm(v.next.map(|d| d.timestamp_millis()))
-            );
+    let printed = (|| {
+        if json {
+            let v = serde_json::Value::Array(snap.jobs.iter().map(JobView::to_json).collect());
+            emit(&serde_json::to_string_pretty(&v).unwrap_or_default())
+        } else {
+            let w = snap.jobs.iter().map(|v| v.job.id.chars().count()).max().unwrap_or(0).max(4);
+            for v in &snap.jobs {
+                emit(&format!(
+                    "{}  {}  last {}  next {}",
+                    pad(&v.job.id, w),
+                    pad(status_word(v), 5),
+                    hhmm(v.last.as_ref().map(|r| r.started_at)),
+                    hhmm(v.next.map(|d| d.timestamp_millis()))
+                ))?;
+            }
+            Ok(())
         }
+    })();
+    if let Err(c) = printed {
+        return c;
     }
-    0
+    match open_err.or(snap.history_error) {
+        Some(e) => fail(format!("history unavailable: {e}"), 1),
+        None => 0,
+    }
 }
 
 fn run(paths: &Paths, arg: Option<&str>, manual: bool) -> i32 {
@@ -112,16 +132,19 @@ fn run(paths: &Paths, arg: Option<&str>, manual: bool) -> i32 {
                 let at = Local::now().timestamp_millis();
                 let _ = append_log(paths, id, format!("hq: config error: {e}\n").as_bytes());
                 let trigger = if manual { Trigger::Manual } else { Trigger::Scheduled };
-                if let Ok(rid) = history.start(id, trigger, at) {
-                    let _ = history.finish(rid, at, Some(1), Status::Failed, &format!("config error: {e}"));
+                if let Some(Ok(rid)) = history.as_ref().map(|h| h.start(id, trigger, at)) {
+                    let _ = history.as_ref().map(|h| h.finish(rid, at, Some(1), Status::Failed, &format!("config error: {e}")));
                 }
             }
             return fail(e, 1);
         }
     };
-    if let Some(e) = history_err {
+    if let Some(e) = &history_err {
         let _ = append_log(paths, &job.id, format!("hq: history unavailable: {e}\n").as_bytes());
     }
+    let Some(history) = history else {
+        return fail(format!("history unavailable: {}", history_err.unwrap_or_default()), 1);
+    };
     let opts = RunOpts { manual, kill_grace: Duration::from_secs(10), now: Local::now };
     run_job(&job, paths, &history, &opts)
 }
@@ -145,8 +168,9 @@ fn logs(paths: &Paths, arg: Option<&str>, follow: bool) -> i32 {
     let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let mut out = std::io::stdout();
     let first = read_from(&path, 0);
-    let _ = out.write_all(&first);
-    let _ = out.flush();
+    if let Err(e) = out.write_all(&first).and_then(|_| out.flush()) {
+        return if e.kind() == std::io::ErrorKind::BrokenPipe { 0 } else { fail(e, 1) };
+    }
     if !follow {
         return 0;
     }
@@ -183,27 +207,32 @@ fn sync(paths: &Paths, yes: bool) -> i32 {
         Ok(p) => p,
         Err(e) => return fail(e, 1),
     };
-    if plan.add.is_empty() && plan.change.is_empty() && plan.remove.is_empty() {
-        println!("in sync");
-        return 0;
-    }
-    for id in &plan.add {
-        println!("+ {id}");
-    }
-    for id in &plan.change {
-        println!("~ {id}");
-    }
-    for id in &plan.remove {
-        println!("- {id}  ({})", label(id));
+    let said = (|| {
+        if plan.add.is_empty() && plan.change.is_empty() && plan.remove.is_empty() {
+            emit("in sync")?;
+            return Ok(true);
+        }
+        for id in &plan.add {
+            emit(&format!("+ {id}"))?;
+        }
+        for id in &plan.change {
+            emit(&format!("~ {id}"))?;
+        }
+        for id in &plan.remove {
+            emit(&format!("- {id}  ({})", label(id)))?;
+        }
+        Ok(false)
+    })();
+    match said {
+        Err(c) => return c,
+        Ok(true) => return 0,
+        Ok(false) => {}
     }
     if !yes && !confirm("Apply?") {
         return 1;
     }
     match apply_sync(&plan, &jobs, &ctx, paths, launchctl_from_env(paths).as_ref()) {
-        Ok(()) => {
-            println!("synced");
-            0
-        }
+        Ok(()) => emit("synced").err().unwrap_or(0),
         Err(e) => fail(e, 1),
     }
 }

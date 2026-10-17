@@ -222,3 +222,44 @@ fn uninstall_removes_agents() {
     assert_eq!(r.out(), "removed hq agents; restored migrated/ plists\n");
     assert!(!fx.agents().join("com.chngu.hq.ok.plist").exists());
 }
+
+/// A directory where history.db should be makes History::open fail.
+fn break_history(fx: &Fx) {
+    std::fs::create_dir_all(fx.home().join("history.db")).unwrap();
+}
+
+#[test]
+fn run_survives_unavailable_history() {
+    let fx = Fx::new();
+    fx.config("[jobs.ok]\ncommand = \"exit 0\"\nevery = \"5m\"\n\n[jobs.three]\ncommand = \"exit 3\"\nevery = \"5m\"\n");
+    break_history(&fx);
+    for (id, code) in [("ok", 0), ("three", 3)] {
+        let r = fx.hq(&["run", id, "--manual"]);
+        assert_eq!(r.code(), code, "{}", r.err());
+        assert!(!r.err().contains("panicked"), "{}", r.err());
+        let log = std::fs::read_to_string(fx.home().join(format!("logs/{id}.log"))).unwrap();
+        assert!(log.contains("hq: history unavailable: "), "{log}");
+        assert!(log.contains("── END "), "{log}");
+    }
+}
+
+#[test]
+fn status_reports_unavailable_history() {
+    let fx = Fx::new();
+    break_history(&fx);
+    for args in [&["status"][..], &["status", "--json"][..]] {
+        let r = fx.hq(args);
+        assert_eq!(r.code(), 1);
+        assert!(r.err().contains("hq: history unavailable: "), "{}", r.err());
+        assert!(r.out().contains("ok"), "stdout still printed: {}", r.out());
+    }
+}
+
+#[test]
+fn status_survives_a_closed_pipe() {
+    let fx = Fx::new();
+    let mut child = fx.cmd(&["status"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
+}

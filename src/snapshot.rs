@@ -26,6 +26,8 @@ pub struct JobView {
 pub struct Snapshot {
     pub jobs: Vec<JobView>,
     pub config_error: Option<String>,
+    /// First history query that failed; the affected rows are shown empty.
+    pub history_error: Option<String>,
     pub at: DateTime<Local>,
 }
 
@@ -66,6 +68,10 @@ pub fn load_snapshot(
         Err(e) => (previous.map(|p| p.jobs.iter().map(|v| v.job.clone()).collect()).unwrap_or_default(), Some(e.0)),
     };
     let held = read_paused(paths);
+    let mut history_error: Option<String> = None;
+    let mut note = |e: rusqlite::Error| {
+        history_error.get_or_insert_with(|| e.to_string());
+    };
     let ctx = PlistCtx::current(paths);
     let views = jobs
         .into_iter()
@@ -77,12 +83,18 @@ pub fn load_snapshot(
                 let path = paths.agents.join(format!("{}.plist", label(&job.id)));
                 std::fs::read_to_string(path).map(|t| t == render_plist(&job, &ctx, paths)).unwrap_or(false)
             };
-            let recent = history.recent(&job.id, 10).unwrap_or_default();
+            let recent = history.recent(&job.id, 10).unwrap_or_else(|e| {
+                note(e);
+                vec![]
+            });
             let last_start = recent.first().and_then(|r| Local.timestamp_millis_opt(r.started_at).single());
             JobView {
                 held: is_held,
                 synced: manual || (plist_matches && (agent.linked || is_held)),
-                last: history.last_real(&job.id).unwrap_or(None),
+                last: history.last_real(&job.id).unwrap_or_else(|e| {
+                    note(e);
+                    None
+                }),
                 running: recent.first().is_some_and(|r| r.status == Status::Running),
                 next: if is_held { None } else { next_run(&job, last_start, now) },
                 agent,
@@ -91,7 +103,7 @@ pub fn load_snapshot(
             }
         })
         .collect();
-    Snapshot { jobs: views, config_error, at: now }
+    Snapshot { jobs: views, config_error, history_error, at: now }
 }
 
 pub fn summarize(s: &Snapshot) -> Summary {
@@ -198,6 +210,7 @@ mod tests {
         let snap = Snapshot {
             at: Local::now(),
             config_error: None,
+            history_error: None,
             jobs: vec![
                 view("a", false, Some(Status::Ok)),
                 view("b", false, Some(Status::Failed)),
@@ -207,6 +220,21 @@ mod tests {
             ],
         };
         assert_eq!(summarize(&snap), Summary { systems: 5, nominal: 1, fault: 2, standby: 2 });
+    }
+
+    #[test]
+    fn history_error_is_recorded_and_rows_are_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::temp(dir.path());
+        std::fs::write(&paths.config, "[jobs.a]\ncommand = \"x\"\nevery = \"5m\"\n").unwrap();
+        let history = History::open(&paths.db()).unwrap();
+        rusqlite::Connection::open(paths.db()).unwrap().execute_batch("DROP TABLE runs").unwrap();
+        let snap = load_snapshot(&paths, &history, &HashMap::new(), Local::now(), None);
+        assert!(snap.history_error.is_some());
+        assert_eq!(snap.jobs.len(), 1);
+        assert!(snap.jobs[0].last.is_none() && snap.jobs[0].recent.is_empty());
+        let ok = load_snapshot(&paths, &History::in_memory().unwrap(), &HashMap::new(), Local::now(), None);
+        assert!(ok.history_error.is_none());
     }
 
     #[test]
