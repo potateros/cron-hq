@@ -13,7 +13,7 @@ use crate::stacks::{
 };
 use chrono::{DateTime, Local, Timelike};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -71,6 +71,12 @@ pub enum PendingKind {
 
 /// A start/stop that never shows up in docker is forgotten after this long.
 pub const PENDING_TTL: Duration = Duration::from_secs(120);
+
+/// Everything the event loop wakes for: terminal input and worker results share one channel.
+pub enum LoopEvent {
+    Input(Event),
+    Msg(Msg),
+}
 
 /// What worker threads and background actions report to the event loop.
 pub enum Msg {
@@ -450,6 +456,11 @@ fn draw_help(frame: &mut Frame, _app: &mut App) {
 
 // ─── terminal ────────────────────────────────────────────────────────────────
 
+/// Clicks and wheel only (?1000) in SGR encoding (?1006). crossterm's EnableMouseCapture would also turn on
+/// all-motion tracking (?1003), waking the loop on every pointer move.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Undo `setup_terminal`. Safe to call any number of times, from the panic hook as well as on exit:
@@ -463,7 +474,8 @@ fn restore_to(out: &mut impl Write) -> bool {
         return false;
     }
     let _ = disable_raw_mode();
-    let _ = crossterm::execute!(out, DisableMouseCapture, LeaveAlternateScreen, crossterm::cursor::Show);
+    let _ = out.write_all(MOUSE_OFF.as_bytes());
+    let _ = crossterm::execute!(out, LeaveAlternateScreen, crossterm::cursor::Show);
     let _ = out.flush();
     true
 }
@@ -472,7 +484,7 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
     let mut out = io::stdout();
-    if let Err(e) = crossterm::execute!(out, EnterAlternateScreen, EnableMouseCapture) {
+    if let Err(e) = crossterm::execute!(out, EnterAlternateScreen).and_then(|_| out.write_all(MOUSE_ON.as_bytes())) {
         restore_terminal();
         return Err(e);
     }
@@ -487,8 +499,15 @@ pub fn install_panic_hook() {
     ONCE.call_once(|| {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            restore_terminal();
-            prev(info);
+            let main = std::thread::current().name() == Some("main");
+            if main {
+                restore_terminal();
+                prev(info);
+            } else if !TERMINAL_ACTIVE.load(Ordering::SeqCst) {
+                prev(info);
+            }
+            // else: a worker panic while the TUI is up is caught and shown as an error line;
+            // printing it would scribble over the screen.
         }));
     });
 }
@@ -547,9 +566,14 @@ fn period(worker: usize, services_view: bool) -> Duration {
 }
 
 /// Run `job` now, then every `period` (which depends on the view) or when poked; sleeps on the condvar between.
-fn spawn_worker(ctl: Arc<Control>, idx: usize, mut job: impl FnMut() + Send + 'static) {
+fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+}
+
+/// `start_now` false waits one period before the first run (the caller already did it).
+fn spawn_worker(ctl: Arc<Control>, idx: usize, tx: Sender<LoopEvent>, start_now: bool, mut job: impl FnMut() + Send + 'static) {
     std::thread::spawn(move || {
-        let mut last: Option<Instant> = None;
+        let mut last: Option<Instant> = if start_now { None } else { Some(Instant::now()) };
         loop {
             {
                 let mut g = ctl.lock();
@@ -567,7 +591,9 @@ fn spawn_worker(ctl: Arc<Control>, idx: usize, mut job: impl FnMut() + Send + 's
                     g = ctl.cv.wait_timeout(g, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
                 }
             }
-            job();
+            if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut job)) {
+                let _ = tx.send(LoopEvent::Msg(Msg::ActionFailed(format!("worker panicked: {}", panic_text(p)))));
+            }
             last = Some(Instant::now());
         }
     });
@@ -594,38 +620,38 @@ impl StackList {
     }
 }
 
-fn start_workers(ctl: &Arc<Control>, paths: &Paths, tx: &Sender<Msg>, docker: Arc<dyn Docker>) {
+fn start_workers(ctl: &Arc<Control>, paths: &Paths, tx: &Sender<LoopEvent>, docker: Arc<dyn Docker>) {
     let usage: Arc<Mutex<HashMap<String, Usage>>> = Arc::default();
 
     let (p, t) = (paths.clone(), tx.clone());
-    spawn_worker(ctl.clone(), AGENTS, move || {
+    spawn_worker(ctl.clone(), AGENTS, tx.clone(), false, move || {
         let lc = launchctl_from_env(&p);
         if let Ok(jobs) = load_config(&p.config) {
-            let _ = t.send(Msg::Agents(fetch_agents(&jobs, lc.as_ref())));
+            let _ = t.send(LoopEvent::Msg(Msg::Agents(fetch_agents(&jobs, lc.as_ref()))));
         }
     });
 
     let (t, d, u) = (tx.clone(), docker.clone(), usage.clone());
     let mut list = StackList::new(paths.config.clone());
     let mut cache = ConfigCache::new();
-    spawn_worker(ctl.clone(), STACKS, move || {
+    spawn_worker(ctl.clone(), STACKS, tx.clone(), true, move || {
         let msg = list.get().map(|stacks| {
             let u = u.lock().unwrap_or_else(|e| e.into_inner()).clone();
             stacks.iter().map(|s| load_stack_view(s, d.as_ref(), &u, &mut cache)).collect::<Vec<_>>()
         });
-        let _ = t.send(Msg::Stacks(msg));
+        let _ = t.send(LoopEvent::Msg(Msg::Stacks(msg)));
     });
 
     let (t, c) = (tx.clone(), ctl.clone());
     let mut list = StackList::new(paths.config.clone());
-    spawn_worker(ctl.clone(), USAGE, move || {
+    spawn_worker(ctl.clone(), USAGE, tx.clone(), true, move || {
         // docker down or stats failing: the ps-based rows still show state, just no CPU/MEM
         if !list.get().is_ok_and(|s| !s.is_empty()) {
             return;
         }
         if let Ok(map) = load_usage(docker.as_ref()) {
             *usage.lock().unwrap_or_else(|e| e.into_inner()) = map.clone();
-            let _ = t.send(Msg::Usage(map));
+            let _ = t.send(LoopEvent::Msg(Msg::Usage(map)));
             c.poke(STACKS, Duration::ZERO);
         }
     });
@@ -669,15 +695,67 @@ pub fn run(paths: Paths) -> io::Result<()> {
     res
 }
 
+/// Blocking terminal reads on their own thread, so input wakes the loop the instant it arrives.
+fn spawn_input_thread(tx: Sender<LoopEvent>) {
+    let _ = std::thread::Builder::new().name("input".into()).spawn(move || {
+        while let Ok(ev) = event::read() {
+            if tx.send(LoopEvent::Input(ev)).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn mode_sig(app: &App) -> (View, std::mem::Discriminant<Mode>, Option<String>) {
+    let id = if let Mode::Log(id) = &app.mode { Some(id.clone()) } else { None };
+    (app.view, std::mem::discriminant(&app.mode), id)
+}
+
+/// Handle one event. Returns false to quit.
+fn handle_event(app: &mut App, ev: LoopEvent, fx: &dyn Effects, stale_mouse: &mut bool) -> bool {
+    match ev {
+        LoopEvent::Msg(m) => app.apply(m),
+        LoopEvent::Input(Event::Key(k)) if k.kind != KeyEventKind::Release => {
+            let before = mode_sig(app);
+            let go = app.handle_key(k, fx);
+            *stale_mouse |= mode_sig(app) != before;
+            return go;
+        }
+        LoopEvent::Input(Event::Mouse(m)) => {
+            // After a mode or view change the hits describe a screen that is gone.
+            if *stale_mouse {
+                return true;
+            }
+            let before = mode_sig(app);
+            let go = app.handle_mouse(m, fx);
+            *stale_mouse |= mode_sig(app) != before;
+            return go;
+        }
+        LoopEvent::Input(Event::Resize(..)) => app.dirty = true,
+        LoopEvent::Input(_) => {}
+    }
+    true
+}
+
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Paths) -> io::Result<()> {
     let fx = RealEffects::new();
     let ctl = Control::new();
-    let (tx, rx): (Sender<Msg>, Receiver<Msg>) = mpsc::channel();
-    start_workers(&ctl, paths, &tx, fx.docker());
+    let (tx, rx): (Sender<LoopEvent>, Receiver<LoopEvent>) = mpsc::channel();
+    let term = Arc::new(AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        let _ = signal_hook::flag::register(sig, term.clone());
+    }
 
-    let (history, open_err) = open_history(paths);
+    let (mut history, open_err) = open_history(paths);
     let mut app = App::new(Local::now());
     app.history_open_error = open_err;
+    // Agent states before the first frame, so jobs do not flash as unlinked.
+    if let Ok(jobs) = load_config(&paths.config) {
+        app.agents = fetch_agents(&jobs, launchctl_from_env(paths).as_ref());
+    }
+    start_workers(&ctl, paths, &tx, fx.docker());
+    spawn_input_thread(tx.clone());
+
     let mut seen = [None; 5];
     let mut sent_view = app.view;
     let mut last_second = app.now.second();
@@ -686,12 +764,18 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Pat
     let result = (|| -> io::Result<()> {
         loop {
             app.now = Local::now();
-            // Drain whatever the workers produced.
-            while let Ok(m) = rx.try_recv() {
-                app.apply(m);
+            if term.load(Ordering::Relaxed) {
+                return Ok(());
             }
             let now_stamps = stamps(paths);
             if now_stamps != seen || app.need_reload {
+                // A database that failed to open may be fixable; try again whenever something changed.
+                if app.history_open_error.is_some() {
+                    if let Ok(h) = History::open(&paths.db()) {
+                        history = Some(h);
+                        app.history_open_error = None;
+                    }
+                }
                 seen = now_stamps;
                 app.need_reload = false;
                 if let Some(h) = &history {
@@ -717,26 +801,16 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Pat
                 terminal.draw(|f| draw(f, &mut app))?;
             }
 
-            // Sleep until input or the next whole second; nothing else polls.
-            if event::poll(until_next_second())? {
-                loop {
-                    match event::read()? {
-                        Event::Key(k) if k.kind != KeyEventKind::Release => {
-                            if !app.handle_key(k, &fx) {
-                                return Ok(());
-                            }
-                        }
-                        Event::Mouse(m) => {
-                            if !app.handle_mouse(m, &fx) {
-                                return Ok(());
-                            }
-                        }
-                        Event::Resize(..) => app.dirty = true,
-                        _ => {}
-                    }
-                    if !event::poll(Duration::ZERO)? {
-                        break;
-                    }
+            // Sleep until input, a worker result or the next whole second; nothing else wakes us.
+            let first = match rx.recv_timeout(until_next_second()) {
+                Ok(ev) => Some(ev),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            };
+            let mut stale_mouse = false;
+            for ev in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
+                if !handle_event(&mut app, ev, &fx, &mut stale_mouse) {
+                    return Ok(());
                 }
             }
         }
@@ -877,7 +951,8 @@ mod tests {
     #[test]
     fn scroll_maps_to_arrow_keys() {
         let (mut a, fx) = (app(), Rec::default());
-        // No view keys exist yet, so observe via a mode the global handler reacts to: help ignores scroll,
+        // NOTE: Task 8 should strengthen this: once jobs_key/log_key move the selection, assert Up/Down x1 (x3 in
+        // the log). No view keys exist yet, so observe via a mode the global handler reacts to: help ignores scroll,
         // dash forwards it. Both must simply not panic or quit.
         assert!(a.handle_mouse(scroll(true), &fx));
         a.mode = Mode::Log("x".into());
@@ -922,6 +997,8 @@ mod tests {
         assert!(restore_to(&mut out), "first restore does the work");
         let s = String::from_utf8_lossy(&out);
         assert!(s.contains("\x1b[?1000l"), "mouse capture disabled: {s:?}");
+        assert!(s.contains("\x1b[?1006l"), "{s:?}");
+        assert!(!s.contains("\x1b[?1003"), "no all-motion tracking");
         assert!(s.contains("\x1b[?1049l"), "alternate screen left: {s:?}");
         assert!(!restore_to(&mut Vec::new()), "second restore is a no-op");
     }
@@ -941,7 +1018,8 @@ mod tests {
     fn workers_wake_on_poke_and_stop_on_quit() {
         let ctl = Control::new();
         let (tx, rx) = mpsc::channel();
-        spawn_worker(ctl.clone(), USAGE, move || {
+        let (etx, _erx) = mpsc::channel();
+        spawn_worker(ctl.clone(), USAGE, etx, true, move || {
             let _ = tx.send(());
         });
         rx.recv_timeout(Duration::from_secs(2)).expect("runs immediately");
@@ -949,6 +1027,32 @@ mod tests {
         ctl.poke(USAGE, Duration::ZERO);
         rx.recv_timeout(Duration::from_secs(2)).expect("poke wakes it");
         ctl.quit();
+    }
+
+    #[test]
+    fn worker_panic_becomes_an_error_message() {
+        let ctl = Control::new();
+        let (tx, rx) = mpsc::channel();
+        spawn_worker(ctl.clone(), USAGE, tx, true, || panic!("kaboom"));
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(LoopEvent::Msg(Msg::ActionFailed(m))) => assert!(m.contains("kaboom"), "{m}"),
+            _ => panic!("expected ActionFailed"),
+        }
+        ctl.quit();
+    }
+
+    #[test]
+    fn stale_mouse_events_are_dropped_after_a_mode_change() {
+        let (mut a, fx) = (app(), Rec::default());
+        a.hits = vec![(Rect::new(0, 0, 10, 1), Hit::Job(1))];
+        let mut stale = false;
+        let key_h = LoopEvent::Input(Event::Key(k(KeyCode::Char('h'))));
+        assert!(handle_event(&mut a, key_h, &fx, &mut stale));
+        assert!(stale && matches!(a.mode, Mode::Help));
+        // A queued click would close help and then (if processed) act on the old hits; it must be skipped.
+        let c = LoopEvent::Input(Event::Mouse(click(1, 0)));
+        assert!(handle_event(&mut a, c, &fx, &mut stale));
+        assert!(matches!(a.mode, Mode::Help));
     }
 
     #[test]
