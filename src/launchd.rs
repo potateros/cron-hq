@@ -194,17 +194,19 @@ pub fn agent_state(id: &str, lc: &dyn Launchctl) -> AgentState {
 }
 
 /// Ids of installed hq LaunchAgents, from the agents dir, sorted.
-fn installed_ids(paths: &Paths) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(&paths.agents) else {
-        return vec![];
-    };
+/// A missing dir is empty; one that exists but cannot be read (e.g. a file in its place) is an error, as in TS.
+fn installed_ids(paths: &Paths) -> io::Result<Vec<String>> {
+    if !paths.agents.exists() {
+        return Ok(vec![]);
+    }
+    let rd = std::fs::read_dir(&paths.agents)?;
     let mut ids: Vec<String> = rd
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
         .filter_map(|f| f.strip_prefix(LABEL_PREFIX)?.strip_suffix(".plist").map(String::from))
         .collect();
     ids.sort();
-    ids
+    Ok(ids)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -216,7 +218,7 @@ pub struct SyncPlan {
 
 pub fn plan_sync(all: &[Job], ctx: &PlistCtx, paths: &Paths) -> io::Result<SyncPlan> {
     let jobs: Vec<&Job> = all.iter().filter(|j| j.schedule != Schedule::Manual).collect(); // on-demand jobs have no agent
-    let installed: BTreeSet<String> = installed_ids(paths).into_iter().collect();
+    let installed: BTreeSet<String> = installed_ids(paths)?.into_iter().collect();
     let mut plan = SyncPlan { add: vec![], change: vec![], remove: vec![] };
     for job in &jobs {
         if !installed.contains(&job.id) {
@@ -281,7 +283,7 @@ pub fn resume(job: &Job, ctx: &PlistCtx, paths: &Paths, lc: &dyn Launchctl) -> R
 }
 
 pub fn uninstall(paths: &Paths, lc: &dyn Launchctl) -> Result<(), String> {
-    for id in installed_ids(paths) {
+    for id in installed_ids(paths).map_err(io_err)? {
         lc.exec(&["bootout", &target(&id)]);
         std::fs::remove_file(plist_path(paths, &id)).map_err(io_err)?;
     }

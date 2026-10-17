@@ -73,7 +73,7 @@ pub fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, maxw: u16, spans: &[Spa
 pub fn between(buf: &mut Buffer, area: Rect, x: u16, y: u16, w: u16, left: &[Span], right: &[Span]) -> u16 {
     let rw = spans_width(right).min(w as usize) as u16;
     let avail = w - rw;
-    let lw = spans_width(left) as u16;
+    let lw = spans_width(left).min(w as usize) as u16;
     let lmax = if lw <= avail { avail } else { avail.saturating_sub(1) };
     put(buf, area, x, y, lmax, left);
     let rx = x + w - rw;

@@ -105,14 +105,126 @@ fn pad_end(s: &str, n: usize) -> String {
     format!("{s}{}", " ".repeat(n.saturating_sub(s.width())))
 }
 
+type Line = (u16, Vec<Span>);
+
+/// The detail panel as lines: (x, spans).
+fn detail_lines(v: &JobView, w: u16) -> Vec<Line> {
+    let job = &v.job;
+    let mut head = vec![sp(format!("▸  {}", job.id.to_uppercase()), ACCENT)];
+    if !job.description.is_empty() {
+        head.push(sp(format!(" — {}", job.description), BODY));
+    }
+    let ix = MARGIN + INDENT;
+    let inner = w.saturating_sub(INDENT);
+    let quiet = job.quiet.map_or("—".to_string(), |q| format!("{} – {}", minutes_to_clock(q.start.into()), minutes_to_clock(q.end.into())));
+    let launchd = if v.held {
+        "held"
+    } else if v.agent.linked {
+        "linked"
+    } else {
+        "unlinked"
+    };
+    let mut out: Vec<Line> = vec![(MARGIN, head)];
+    out.push((ix, field("cmd", job.command.clone())));
+    out.push((ix, field("dir", job.cwd.to_string_lossy().into_owned())));
+    if let Some(u) = &job.url {
+        out.push((ix, field("url", format!("{u}  (O opens)"))));
+    }
+    let mut q = field("quiet", pad_end(&quiet, 18));
+    q.extend(field("timeout", pad_end(&format_seconds(job.timeout_sec), 8)));
+    q.extend(field("launchd", launchd.to_string()));
+    out.push((ix, q));
+    let last_line = v
+        .last
+        .as_ref()
+        .and_then(|r| r.tail.as_deref())
+        .and_then(|t| t.split('\n').rfind(|l| !l.trim().is_empty()))
+        .unwrap_or("no output yet");
+    for (i, l) in clamp_lines(last_line, (inner as usize).saturating_sub(2), 2).iter().enumerate() {
+        out.push((ix, vec![sp(format!("{}{l}", if i > 0 { "  " } else { "› " }), BODY)]));
+    }
+    out
+}
+
+/// Draw `lines` from row `y`; the first line (the panel title) may use the full width, the rest the indented width.
+fn draw_detail(buf: &mut ratatui::buffer::Buffer, area: Rect, mut y: u16, w: u16, lines: &[Line]) {
+    for (x, spans) in lines {
+        put(buf, area, *x, y, w.saturating_sub(x - MARGIN), spans);
+        y += 1;
+    }
+}
+
+/// The sync prompt's text lines and whether the last one carries `Y confirm`.
+fn prompt_lines(res: &Result<crate::launchd::SyncPlan, String>) -> (Vec<(String, ratatui::style::Color)>, bool) {
+    let mut lines = Vec::new();
+    match res {
+        Err(e) => {
+            lines.push((e.clone(), FAULT));
+            lines.push(("any key to close".to_string(), HOLD));
+            (lines, false)
+        }
+        Ok(plan) => {
+            lines.extend(plan.add.iter().map(|id| (format!("+ {id}"), ACCENT)));
+            lines.extend(plan.change.iter().map(|id| (format!("~ {id}"), BODY)));
+            lines.extend(plan.remove.iter().map(|id| (format!("- {id}"), FAULT)));
+            if plan.add.is_empty() && plan.change.is_empty() && plan.remove.is_empty() {
+                lines.push(("in sync · any key to close".to_string(), HOLD));
+                (lines, false)
+            } else {
+                lines.push(("apply sync?  Y confirm · any key cancel".to_string(), HOLD));
+                (lines, true)
+            }
+        }
+    }
+}
+
+/// Draw prompt lines from `y`, registering the `Y confirm` target on the last one.
+fn draw_sync_prompt(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    mut y: u16,
+    lines: &[(String, ratatui::style::Color)],
+    confirm: bool,
+    hits: &mut Vec<(Rect, Hit)>,
+) {
+    for (i, (t, c)) in lines.iter().enumerate() {
+        put(buf, area, MARGIN, y, area.width.saturating_sub(MARGIN), &[sp(t.clone(), *c)]);
+        if confirm && i + 1 == lines.len() {
+            let prefix = t.split("Y confirm").next().unwrap_or("").width() as u16;
+            if let Some(r) = visible(Rect::new(MARGIN + prefix, y, "Y confirm".width() as u16, 1), area) {
+                hits.push((r, Hit::Confirm));
+            }
+        }
+        y += 1;
+    }
+}
+
+/// The footer; each `<key> <label>` segment is a click target.
+fn draw_footer(buf: &mut ratatui::buffer::Buffer, area: Rect, y: u16, w: u16, hits: &mut Vec<(Rect, Hit)>) {
+    put(buf, area, MARGIN, y, w, &[sp(KEYS, HOLD)]);
+    let mut x = MARGIN;
+    for seg in KEYS.split("   ") {
+        let sw = seg.width() as u16;
+        if let Some(code) = segment_key(seg) {
+            let r = Rect::new(x, y, sw.min((MARGIN + w).saturating_sub(x)), 1);
+            if let Some(r) = visible(r, area) {
+                hits.push((r, Hit::Key(code)));
+            }
+        }
+        x += sw + 3;
+    }
+}
+
 /// `HQ · JOBS`: draw the whole view and register its clickable regions.
+///
+/// Everything above and below the job list is fixed; the sync prompt replaces the detail panel, and the job
+/// rows are windowed around the selection so the footer always keeps the last row.
 pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let w = inner_width(area.width);
     let mut hits: Vec<(Rect, Hit)> = Vec::new();
     let banner = app.history_banner();
     let docker = app.docker_line();
-    let prompt_mode = matches!(app.mode, Mode::Sync(_));
     let now = app.now;
     let buf = frame.buffer_mut();
     let mut y: u16 = 0;
@@ -172,7 +284,28 @@ pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
     rule(buf, area, y, w);
     y += 1;
 
-    for (i, v) in snap.jobs.iter().enumerate() {
+    // The region under the job list: the sync prompt when open, else the selected job's details.
+    let prompt = match &app.mode {
+        Mode::Sync(res) => Some(prompt_lines(res)),
+        _ => None,
+    };
+    let detail = match (&prompt, snap.jobs.get(selected)) {
+        (None, Some(v)) => detail_lines(v, w),
+        (None, None) => vec![(MARGIN, vec![sp("no jobs in jobs.toml", HOLD)])],
+        _ => Vec::new(),
+    };
+    let lead_rule = prompt.is_some() || !snap.jobs.is_empty();
+    // Rows left for the region and the jobs: all but the closing rule and the footer.
+    let rest = (area.height as usize).saturating_sub(y as usize + 2 + usize::from(lead_rule));
+    let wanted = prompt.as_ref().map_or(detail.len(), |(l, _)| l.len());
+    let region = wanted.min(rest.saturating_sub(2).max(1)); // keep room for at least one job row
+    let k = (rest.saturating_sub(region) / 2).clamp(1, count.max(1));
+    // When something had to give, leftover rows go to the region so the footer keeps the last row.
+    let squeezed = k < count || region < wanted;
+    let slack = if squeezed { rest.saturating_sub(region + 2 * k) } else { 0 };
+    let start = if count > k { selected.saturating_sub(k / 2).min(count - k) } else { 0 };
+
+    for (i, v) in snap.jobs.iter().enumerate().skip(start).take(k) {
         let sel = i == selected;
         let g = glyph(v);
         let gc = match g {
@@ -188,112 +321,28 @@ pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
         if !sel {
             detail_style = detail_style.add_modifier(Modifier::DIM);
         }
-        let detail = (format!("{}{}", " ".repeat(INDENT as usize), detail_line(v)), detail_style);
-        between(buf, area, MARGIN, y + 1, w, &[detail], &history_strip(v));
+        let line = (format!("{}{}", " ".repeat(INDENT as usize), detail_line(v)), detail_style);
+        between(buf, area, MARGIN, y + 1, w, &[line], &history_strip(v));
         if let Some(r) = visible(Rect::new(MARGIN, y, w, 2), area) {
             hits.push((r, Hit::Job(i)));
         }
         y += 2;
     }
 
-    if let Some(v) = snap.jobs.get(selected) {
+    if lead_rule {
         rule(buf, area, y, w);
         y += 1;
-        let job = &v.job;
-        let mut head = vec![sp(format!("▸  {}", job.id.to_uppercase()), ACCENT)];
-        if !job.description.is_empty() {
-            head.push(sp(format!(" — {}", job.description), BODY));
-        }
-        put(buf, area, MARGIN, y, w, &head);
-        y += 1;
-        let ix = MARGIN + INDENT;
-        let inner = w.saturating_sub(INDENT);
-        let quiet = job.quiet.map_or("—".to_string(), |q| format!("{} – {}", minutes_to_clock(q.start.into()), minutes_to_clock(q.end.into())));
-        let launchd = if v.held {
-            "held"
-        } else if v.agent.linked {
-            "linked"
-        } else {
-            "unlinked"
-        };
-        let mut lines: Vec<Vec<Span>> = vec![field("cmd", job.command.clone()), field("dir", job.cwd.to_string_lossy().into_owned())];
-        if let Some(u) = &job.url {
-            lines.push(field("url", format!("{u}  (O opens)")));
-        }
-        let mut q = field("quiet", pad_end(&quiet, 18));
-        q.extend(field("timeout", pad_end(&format_seconds(job.timeout_sec), 8)));
-        q.extend(field("launchd", launchd.to_string()));
-        lines.push(q);
-        for l in &lines {
-            put(buf, area, ix, y, inner, l);
-            y += 1;
-        }
-        let last_line = v
-            .last
-            .as_ref()
-            .and_then(|r| r.tail.as_deref())
-            .and_then(|t| t.split('\n').rfind(|l| !l.trim().is_empty()))
-            .unwrap_or("no output yet");
-        for (i, l) in clamp_lines(last_line, (inner as usize).saturating_sub(2), 2).iter().enumerate() {
-            put(buf, area, ix, y, inner, &[sp(format!("{}{l}", if i > 0 { "  " } else { "› " }), BODY)]);
-            y += 1;
-        }
-    } else {
-        put(buf, area, MARGIN, y, area.width, &[sp("no jobs in jobs.toml", HOLD)]);
-        y += 1;
     }
+    match &prompt {
+        Some((lines, confirm)) => {
+            let from = lines.len() - region.min(lines.len()); // the last lines: the question stays visible
+            draw_sync_prompt(buf, area, y, &lines[from..], *confirm, &mut hits);
+        }
+        None => draw_detail(buf, area, y, w, &detail[..region.min(detail.len())]),
+    }
+    y += (region + slack) as u16;
     rule(buf, area, y, w);
-    y += 1;
-
-    // Footer: each `<key> <label>` segment is a click target.
-    put(buf, area, MARGIN, y, w, &[sp(KEYS, HOLD)]);
-    let mut x = MARGIN;
-    for seg in KEYS.split("   ") {
-        let sw = seg.width() as u16;
-        if let Some(code) = segment_key(seg) {
-            let r = Rect::new(x, y, sw.min((MARGIN + w).saturating_sub(x)), 1);
-            if let Some(r) = visible(r, area) {
-                hits.push((r, Hit::Key(code)));
-            }
-        }
-        x += sw + 3;
-    }
-    y += 1;
-
-    if prompt_mode {
-        if let Mode::Sync(res) = &app.mode {
-            let mut lines: Vec<(String, ratatui::style::Color)> = Vec::new();
-            let mut confirm = false;
-            match res {
-                Err(e) => {
-                    lines.push((e.clone(), FAULT));
-                    lines.push(("any key to close".into(), HOLD));
-                }
-                Ok(plan) => {
-                    lines.extend(plan.add.iter().map(|id| (format!("+ {id}"), ACCENT)));
-                    lines.extend(plan.change.iter().map(|id| (format!("~ {id}"), BODY)));
-                    lines.extend(plan.remove.iter().map(|id| (format!("- {id}"), FAULT)));
-                    if plan.add.is_empty() && plan.change.is_empty() && plan.remove.is_empty() {
-                        lines.push(("in sync · any key to close".into(), HOLD));
-                    } else {
-                        lines.push(("apply sync?  Y confirm · any key cancel".into(), HOLD));
-                        confirm = true;
-                    }
-                }
-            }
-            let n = lines.len();
-            for (i, (t, c)) in lines.into_iter().enumerate() {
-                put(buf, area, MARGIN, y, area.width.saturating_sub(MARGIN), &[sp(t.clone(), c)]);
-                if confirm && i + 1 == n {
-                    let prefix = t.split("Y confirm").next().unwrap_or("").width() as u16;
-                    if let Some(r) = visible(Rect::new(MARGIN + prefix, y, "Y confirm".width() as u16, 1), area) {
-                        hits.push((r, Hit::Confirm));
-                    }
-                }
-                y += 1;
-            }
-        }
-    }
+    draw_footer(buf, area, y + 1, w, &mut hits);
     app.hits = hits;
 }
 
@@ -511,6 +560,10 @@ mod tests {
         assert!(ls[2].contains("◢ H Q"));
     }
 
+    fn with_services_app() -> App {
+        with_services()
+    }
+
     fn with_services() -> App {
         let mut a = app_with(snapshot());
         let svc = |name: &str, state, cpu, mem| ServiceView {
@@ -637,17 +690,91 @@ mod tests {
     }
 
     #[test]
-    fn s_with_a_broken_config_or_no_paths_shows_the_error() {
+    fn s_with_a_broken_config_shows_config_error() {
         let (mut a, _d) = synced_app();
         let p = a.paths.clone().unwrap();
         std::fs::write(&p.config, "[jobs.alpha]\ncommand = ").unwrap();
         a.handle_key(k(KeyCode::Char('s')), &Rec::default());
         assert!(text(&mut a).contains("CONFIG ERROR — "));
-        std::fs::write(&p.config, "[jobs.alpha]\ncommand = \"true\"\nevery = \"5m\"\n").unwrap();
-        a.paths = None;
-        a.handle_key(k(KeyCode::Esc), &Rec::default());
+    }
+
+    #[test]
+    fn s_with_an_unreadable_agents_dir_shows_the_io_error() {
+        let (mut a, _d) = synced_app();
+        let p = a.paths.clone().unwrap();
+        std::fs::write(&p.agents, "not a dir").unwrap();
         a.handle_key(k(KeyCode::Char('s')), &Rec::default());
-        assert!(text(&mut a).contains("ERROR — "));
+        let f = text(&mut a);
+        assert!(f.contains("ERROR — "), "{f}");
+        assert!(!f.contains("CONFIG ERROR"), "{f}");
+        assert!(f.contains("Not a directory"), "the io error text is shown: {f}");
+        assert!(f.contains("any key to close"));
+    }
+
+    fn five_jobs() -> crate::snapshot::Snapshot {
+        let mut s = snapshot();
+        s.jobs.push(crate::snapshot::JobView { job: job("fifth", crate::config::Schedule::Manual), ..views().remove(0) });
+        s
+    }
+
+    #[test]
+    fn sync_prompt_fits_80x24_and_confirm_applies() {
+        for with_services in [false, true] {
+            let (mut a, _d) = synced_app();
+            a.snap = Some(five_jobs());
+            if with_services {
+                a.stacks = with_services_app().stacks;
+            }
+            let fx = Rec::default();
+            a.handle_key(k(KeyCode::Char('s')), &fx);
+            let ls = render_size(&mut a, 80, 24);
+            let f = ls.join("\n");
+            assert!(f.contains("+ alpha") && f.contains("+ beta"), "{f}");
+            assert!(f.contains("R run"), "footer stays: {f}");
+            let (c, r) = find(&ls, "Y confirm");
+            assert!(a.hits.iter().any(|(rc, h)| *h == Hit::Confirm && rc.y == r));
+            a.handle_mouse(click(c, r), &fx);
+            assert_eq!(*fx.cli.borrow(), vec![vec!["sync", "--yes"]], "services line: {with_services}");
+        }
+    }
+
+    #[test]
+    fn long_prompt_keeps_the_question_visible() {
+        let (mut a, _d) = synced_app();
+        a.snap = Some(five_jobs());
+        let ids: Vec<String> = (0..40).map(|i| format!("job{i}")).collect();
+        a.mode = Mode::Sync(Ok(SyncPlan { add: ids, change: vec![], remove: vec![] }));
+        let ls = render_size(&mut a, 80, 24);
+        assert!(ls.iter().any(|l| l.contains("apply sync?  Y confirm")));
+        assert!(ls[23].contains("R run"), "{:?}", ls[23]);
+        assert!(a.hits.iter().any(|(_, h)| *h == Hit::Confirm));
+    }
+
+    #[test]
+    fn many_jobs_window_around_the_selection() {
+        let mut s = snapshot();
+        let mut extra = Vec::new();
+        for i in 0..8 {
+            extra.push(crate::snapshot::JobView {
+                job: job(&format!("extra-{i:02}"), crate::config::Schedule::Manual),
+                ..views().remove(0)
+            });
+        }
+        s.jobs.extend(extra);
+        assert_eq!(s.jobs.len(), 12);
+        let mut a = app_with(s);
+        a.selected = 11;
+        let ls = render_size(&mut a, 80, 24);
+        assert!(ls.iter().any(|l| l.contains("EXTRA-07")), "selected row visible");
+        assert!(ls[23].contains("R run"), "footer on the last row: {:?}", ls[23]);
+        assert!(ls.iter().any(|l| l.contains("▸  EXTRA-07")), "detail kept");
+        let (c, r) = find(&ls, "EXTRA-07");
+        assert!(a.hits.iter().any(|(rc, h)| *h == Hit::Job(11) && rc.y <= r && r < rc.y + rc.height));
+        let _ = c;
+        a.selected = 0;
+        let ls = render_size(&mut a, 80, 24);
+        assert!(ls.iter().any(|l| l.contains("EINK-WEATHER")));
+        assert!(ls[23].contains("R run"));
     }
 
     #[test]
