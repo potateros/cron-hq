@@ -1,10 +1,12 @@
 # hq job registry. Apply changes with `hq sync` (or S in the TUI).
-# Schedules: every = "30m" | at = ["06:55"] | manual = true (on demand: R in the TUI). Optional: cwd, quiet = "HH:MM-HH:MM", timeout, description.
+# Schedules: every = "30m" | at = ["06:55"] | manual = true (on demand: R in the TUI). Optional: cwd, quiet = "HH:MM-HH:MM", timeout, description, url.
+# [stacks.<name>] lists docker compose projects for the TUI services view (Tab); only the TUI reads them.
 
 [jobs.eink-tool]
 description = "Launch E-Ink Tool (local web page: pictures, slots, modes; stops 10 min after its tab closes)"
 cwd         = "~/Developer/potateros/nrf5-eink"
 command     = "uv run eink web --background"
+url         = "http://localhost:8742/"
 manual      = true
 timeout     = "1m"
 
@@ -36,3 +38,13 @@ cwd         = "~/Developer/potateros/trml-byos"
 command     = "host/tailscale-watchdog.sh"
 every       = "1h"
 timeout     = "2m"
+
+# ─── docker compose stacks (TUI services view) ───────────────────────────────
+
+[stacks.homelab]
+dir = "~/Developer/potateros/homelab"
+
+[stacks.terminus]
+dir      = "~/Developer/potateros/trml-byos"
+files    = ["terminus/compose.yml", "compose.override.yml"]
+env_file = "terminus/.env"
