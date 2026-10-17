@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 pub const KEYS: &str = "↑↓ select   ⏎ logs   R run   P hold   S sync   O open   Tab services   H help   Q exit";
 
 /// The key a footer segment stands for; `↑↓` is two keys, so it is not clickable.
-fn segment_key(segment: &str) -> Option<KeyCode> {
+pub(super) fn segment_key(segment: &str) -> Option<KeyCode> {
     let first = segment.split(' ').next()?;
     match first {
         "⏎" => Some(KeyCode::Enter),
@@ -200,10 +200,10 @@ fn draw_sync_prompt(
 }
 
 /// The footer; each `<key> <label>` segment is a click target.
-fn draw_footer(buf: &mut ratatui::buffer::Buffer, area: Rect, y: u16, w: u16, hits: &mut Vec<(Rect, Hit)>) {
-    put(buf, area, MARGIN, y, w, &[sp(KEYS, HOLD)]);
+pub(super) fn draw_footer(buf: &mut ratatui::buffer::Buffer, area: Rect, y: u16, w: u16, keys: &str, hits: &mut Vec<(Rect, Hit)>) {
+    put(buf, area, MARGIN, y, w, &[sp(keys, HOLD)]);
     let mut x = MARGIN;
-    for seg in KEYS.split("   ") {
+    for seg in keys.split("   ") {
         let sw = seg.width() as u16;
         if let Some(code) = segment_key(seg) {
             let r = Rect::new(x, y, sw.min((MARGIN + w).saturating_sub(x)), 1);
@@ -342,7 +342,7 @@ pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
     }
     y += (region + slack) as u16;
     rule(buf, area, y, w);
-    draw_footer(buf, area, y + 1, w, &mut hits);
+    draw_footer(buf, area, y + 1, w, KEYS, &mut hits);
     app.hits = hits;
 }
 

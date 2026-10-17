@@ -5,6 +5,7 @@ mod canvas;
 pub mod help;
 pub mod jobs;
 pub mod logview;
+pub mod services;
 pub mod theme;
 #[cfg(test)]
 pub mod testing;
@@ -15,7 +16,7 @@ use crate::launchd::{launchctl_from_env, AgentState, SyncPlan};
 use crate::paths::Paths;
 use crate::snapshot::{fetch_agents, load_snapshot, Snapshot};
 use crate::stacks::{
-    is_up, load_stack_view, load_stacks, load_usage, totals, ConfigCache, Docker, RealDocker, Stack, StackView, Usage,
+    is_up, load_stack_views, load_stacks, load_usage, totals, ConfigCache, Docker, RealDocker, Stack, StackView, Usage,
 };
 use chrono::{DateTime, Local, Timelike};
 use crossterm::event::{
@@ -25,7 +26,6 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
-use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -92,7 +92,10 @@ pub enum Msg {
     Agents(HashMap<String, AgentState>),
     Stacks(Result<Vec<StackView>, String>),
     Usage(HashMap<String, Usage>),
-    ActionFailed(String),
+    /// A compose start/stop worked; docker should be re-read now.
+    ActionDone,
+    /// A compose start/stop (or a worker) failed: the message, and the pending keys to forget.
+    ActionFailed(String, Vec<String>),
 }
 
 /// Side effects the keys can ask for; faked in tests.
@@ -143,6 +146,8 @@ pub struct App {
     /// The snapshot should be rebuilt (new agent states arrived).
     pub need_reload: bool,
     pub dirty: bool,
+    /// Where background actions report; unset in unit tests that do not look at results.
+    pub tx: Option<Sender<LoopEvent>>,
 }
 
 pub fn service_key(stack: &str, service: &str) -> String {
@@ -176,6 +181,7 @@ impl App {
             refresh: Refresh::default(),
             need_reload: false,
             dirty: true,
+            tx: None,
         }
     }
 
@@ -214,7 +220,14 @@ impl App {
                 }
             }
             Msg::Usage(u) => self.usage = u,
-            Msg::ActionFailed(e) => self.action_error = Some(e),
+            Msg::ActionDone => self.refresh.stacks = true,
+            Msg::ActionFailed(e, keys) => {
+                self.action_error = Some(e);
+                for k in &keys {
+                    self.pending.remove(k);
+                }
+                self.refresh.stacks = true;
+            }
         }
     }
 
@@ -306,18 +319,10 @@ impl App {
         true
     }
 
-    // Extension points: Tasks 8-10 fill these in.
-
-    /// Services keys: arrows, O, X, Z.
-    fn services_key(&mut self, _ev: KeyEvent, _fx: &dyn Effects) {}
-
     /// Keys inside the log view other than Esc.
     fn log_key(&mut self, ev: KeyEvent, _fx: &dyn Effects) {
         self.log.handle_key(ev);
     }
-
-    /// Y on a stack prompt: run the compose command and mark the affected rows pending.
-    fn confirm_stack(&mut self, _fx: &dyn Effects) {}
 
     /// Returns false to quit. Mouse handling lives here only; views just register `hits`.
     pub fn handle_mouse(&mut self, ev: MouseEvent, fx: &dyn Effects) -> bool {
@@ -435,7 +440,7 @@ impl Effects for RealEffects {
     }
 }
 
-// ─── drawing (views replace these stubs in Tasks 8-10) ───────────────────────
+// ─── drawing ───────────────────────
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.hits.clear();
@@ -443,17 +448,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (Mode::Log(id), _) => logview::draw_log(frame, &mut app.log, id, &mut app.hits),
         (Mode::Help, _) => help::draw_help(frame, app.view),
         (_, View::Jobs) => jobs::draw_jobs(frame, app),
-        (_, View::Services) => draw_services(frame, app),
+        (_, View::Services) => services::draw_services(frame, app),
     }
 }
 
-fn draw_title(frame: &mut Frame, title: &str) {
-    frame.render_widget(Paragraph::new(title.to_string()), frame.area());
-}
-
-fn draw_services(frame: &mut Frame, _app: &mut App) {
-    draw_title(frame, "HQ · SERVICES");
-}
 
 // ─── terminal ────────────────────────────────────────────────────────────────
 
@@ -593,7 +591,7 @@ fn spawn_worker(ctl: Arc<Control>, idx: usize, tx: Sender<LoopEvent>, start_now:
                 }
             }
             if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut job)) {
-                let _ = tx.send(LoopEvent::Msg(Msg::ActionFailed(format!("worker panicked: {}", panic_text(p)))));
+                let _ = tx.send(LoopEvent::Msg(Msg::ActionFailed(format!("worker panicked: {}", panic_text(p)), Vec::new())));
             }
             last = Some(Instant::now());
         }
@@ -636,9 +634,9 @@ fn start_workers(ctl: &Arc<Control>, paths: &Paths, tx: &Sender<LoopEvent>, dock
     let mut list = StackList::new(paths.config.clone());
     let mut cache = ConfigCache::new();
     spawn_worker(ctl.clone(), STACKS, tx.clone(), true, move || {
-        let msg = list.get().map(|stacks| {
+        let msg = list.get().and_then(|stacks| {
             let u = u.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            stacks.iter().map(|s| load_stack_view(s, d.as_ref(), &u, &mut cache)).collect::<Vec<_>>()
+            load_stack_views(&stacks, d.as_ref(), &u, &mut cache)
         });
         let _ = t.send(LoopEvent::Msg(Msg::Stacks(msg)));
     });
@@ -765,6 +763,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Pat
     let mut app = App::new(Local::now());
     app.history_open_error = open_err;
     app.paths = Some(paths.clone());
+    app.tx = Some(tx.clone());
     // Agent states before the first frame, so jobs do not flash as unlinked.
     if let Ok(jobs) = load_config(&paths.config) {
         app.agents = fetch_agents(&jobs, launchctl_from_env(paths).as_ref());
@@ -997,7 +996,7 @@ mod tests {
     #[test]
     fn apply_updates_state() {
         let mut a = app();
-        a.apply(Msg::ActionFailed("boom".into()));
+        a.apply(Msg::ActionFailed("boom".into(), vec![]));
         assert_eq!(a.action_error.as_deref(), Some("boom"));
         a.apply(Msg::Stacks(Err("docker down".into())));
         assert_eq!(a.svc_error.as_deref(), Some("docker down"));
@@ -1066,7 +1065,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         spawn_worker(ctl.clone(), USAGE, tx, true, || panic!("kaboom"));
         match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(LoopEvent::Msg(Msg::ActionFailed(m))) => assert!(m.contains("kaboom"), "{m}"),
+            Ok(LoopEvent::Msg(Msg::ActionFailed(m, _))) => assert!(m.contains("kaboom"), "{m}"),
             _ => panic!("expected ActionFailed"),
         }
         ctl.quit();

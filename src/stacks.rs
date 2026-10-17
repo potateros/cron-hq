@@ -191,13 +191,14 @@ pub enum ServiceState {
 }
 
 impl ServiceState {
-    /// Docker's `State` word. Anything unrecognised (e.g. "removing") counts as dead so it shows as a fault.
+    /// Docker's `State` word. "removing" and an empty/absent word are stopped, not faults (ruling R18);
+    /// "dead" and anything unrecognised count as dead so they show as a fault.
     fn from_docker(s: &str) -> ServiceState {
         match s {
             "running" => ServiceState::Running,
             "restarting" => ServiceState::Restarting,
             "paused" => ServiceState::Paused,
-            "exited" => ServiceState::Exited,
+            "exited" | "removing" | "" => ServiceState::Exited,
             "created" => ServiceState::Created,
             _ => ServiceState::Dead,
         }
@@ -351,7 +352,7 @@ pub fn parse_compose_config(stdout: &str) -> Result<Vec<(String, Declared)>, Str
     Ok(out)
 }
 
-fn last_line(s: &str) -> &str {
+pub fn last_line(s: &str) -> &str {
     s.trim().lines().rfind(|l| !l.is_empty()).unwrap_or("")
 }
 
@@ -388,31 +389,58 @@ fn files_key(s: &Stack) -> String {
         .join("|")
 }
 
-pub fn load_stack_view(s: &Stack, docker: &dyn Docker, usage: &HashMap<String, Usage>, cache: &mut ConfigCache) -> StackView {
-    match try_load(s, docker, usage, cache) {
-        Ok(services) => StackView { stack: s.clone(), services, error: None },
-        Err(e) => StackView { stack: s.clone(), services: Vec::new(), error: Some(e) },
+/// Why a stack could not be loaded: docker itself would not run, or compose reported a problem.
+enum LoadErr {
+    Exec(String),
+    Compose(String),
+}
+
+impl LoadErr {
+    fn into_message(self) -> String {
+        match self {
+            LoadErr::Exec(e) | LoadErr::Compose(e) => e,
+        }
     }
 }
 
-fn try_load(s: &Stack, docker: &dyn Docker, usage: &HashMap<String, Usage>, cache: &mut ConfigCache) -> Result<Vec<ServiceView>, String> {
+pub fn load_stack_view(s: &Stack, docker: &dyn Docker, usage: &HashMap<String, Usage>, cache: &mut ConfigCache) -> StackView {
+    match try_load(s, docker, usage, cache) {
+        Ok(services) => StackView { stack: s.clone(), services, error: None },
+        Err(e) => StackView { stack: s.clone(), services: Vec::new(), error: Some(e.into_message()) },
+    }
+}
+
+/// All stacks. A docker that cannot run at all (missing binary, timeout) fails the whole load, as in the
+/// TS `Promise.all`; compose complaints stay on their own stack.
+pub fn load_stack_views(stacks: &[Stack], docker: &dyn Docker, usage: &HashMap<String, Usage>, cache: &mut ConfigCache) -> Result<Vec<StackView>, String> {
+    stacks
+        .iter()
+        .map(|s| match try_load(s, docker, usage, cache) {
+            Ok(services) => Ok(StackView { stack: s.clone(), services, error: None }),
+            Err(LoadErr::Exec(e)) => Err(e),
+            Err(LoadErr::Compose(e)) => Ok(StackView { stack: s.clone(), services: Vec::new(), error: Some(e) }),
+        })
+        .collect()
+}
+
+fn try_load(s: &Stack, docker: &dyn Docker, usage: &HashMap<String, Usage>, cache: &mut ConfigCache) -> Result<Vec<ServiceView>, LoadErr> {
     let key = files_key(s);
     if cache.entries.get(&s.name).map(|e| &e.0) != Some(&key) {
-        let cfg = docker.exec(&compose_args(s, &["config", "--format", "json"]), Some(POLL_TIMEOUT))?;
+        let cfg = docker.exec(&compose_args(s, &["config", "--format", "json"]), Some(POLL_TIMEOUT)).map_err(LoadErr::Exec)?;
         if cfg.code != 0 {
             let l = last_line(&cfg.stderr);
-            return Err(if l.is_empty() { format!("compose config exited {}", cfg.code) } else { l.to_string() });
+            return Err(LoadErr::Compose(if l.is_empty() { format!("compose config exited {}", cfg.code) } else { l.to_string() }));
         }
-        let declared = parse_compose_config(&cfg.stdout)?;
+        let declared = parse_compose_config(&cfg.stdout).map_err(LoadErr::Compose)?;
         cache.entries.insert(s.name.clone(), (key, declared));
     }
     let declared = &cache.entries[&s.name].1;
-    let ps = docker.exec(&compose_args(s, &["ps", "-a", "--format", "json"]), Some(POLL_TIMEOUT))?;
+    let ps = docker.exec(&compose_args(s, &["ps", "-a", "--format", "json"]), Some(POLL_TIMEOUT)).map_err(LoadErr::Exec)?;
     if ps.code != 0 {
         let l = last_line(&ps.stderr);
-        return Err(if l.is_empty() { format!("compose ps exited {}", ps.code) } else { l.to_string() });
+        return Err(LoadErr::Compose(if l.is_empty() { format!("compose ps exited {}", ps.code) } else { l.to_string() }));
     }
-    let live: HashMap<String, Value> = parse_json_lines(&ps.stdout)?.into_iter().map(|r| (text(&r, "Service"), r)).collect();
+    let live: HashMap<String, Value> = parse_json_lines(&ps.stdout).map_err(LoadErr::Compose)?.into_iter().map(|r| (text(&r, "Service"), r)).collect();
     Ok(declared
         .iter()
         .map(|(service, d)| {
@@ -825,6 +853,33 @@ mod tests {
             }
         }
         assert_eq!(load_usage(&Stats).unwrap()["a"], Usage { cpu: 1.0, mem: 1024 });
+    }
+
+    #[test]
+    fn removing_and_empty_state_are_stopped_not_faults() {
+        assert_eq!(ServiceState::from_docker("removing"), ServiceState::Exited);
+        assert_eq!(ServiceState::from_docker(""), ServiceState::Exited);
+        assert_eq!(ServiceState::from_docker("dead"), ServiceState::Dead);
+        assert_eq!(ServiceState::from_docker("bogus"), ServiceState::Dead);
+        let docker = FakeDocker::new(config_json(), ndjson(&[serde_json::json!({ "Service": "jellyfin", "Name": "j", "State": "removing", "ExitCode": 0 })]));
+        let v = load_stack_view(&lab(), &docker, &HashMap::new(), &mut ConfigCache::new());
+        assert!(!is_service_fault(&v.services[0]) && !is_up(&v.services[0]));
+    }
+
+    #[test]
+    fn exec_failure_fails_the_whole_load_but_compose_errors_stay_on_the_stack() {
+        let mut d = FakeDocker::new(String::new(), String::new());
+        d.fail = Some("docker not found".into());
+        let r = load_stack_views(&[lab()], &d, &HashMap::new(), &mut ConfigCache::new());
+        assert_eq!(r.unwrap_err(), "docker not found");
+        struct Failing;
+        impl Docker for Failing {
+            fn exec(&self, _: &[String], _: Option<Duration>) -> Result<CmdOutput, String> {
+                Ok(CmdOutput { code: 1, stdout: String::new(), stderr: "no such file".into() })
+            }
+        }
+        let v = load_stack_views(&[lab()], &Failing, &HashMap::new(), &mut ConfigCache::new()).unwrap();
+        assert_eq!(v[0].error.as_deref(), Some("no such file"));
     }
 
     #[test]

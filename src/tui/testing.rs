@@ -5,7 +5,7 @@ use crate::config::{Job, QuietWindow, Schedule};
 use crate::history::{RunRow, Status, Trigger};
 use crate::launchd::AgentState;
 use crate::snapshot::{JobView, Snapshot};
-use crate::stacks::{Docker, RealDocker};
+use crate::stacks::Docker;
 use chrono::{DateTime, Duration, Local, TimeZone};
 use ratatui::buffer::Buffer;
 use std::cell::RefCell;
@@ -17,6 +17,16 @@ use unicode_width::UnicodeWidthStr;
 pub struct Rec {
     pub cli: RefCell<Vec<Vec<String>>>,
     pub opened: RefCell<Vec<String>>,
+    /// The docker the keys get; by default one that refuses, so a test can never reach the real CLI.
+    pub docker: Option<Arc<dyn Docker>>,
+}
+
+struct NoDocker;
+
+impl Docker for NoDocker {
+    fn exec(&self, _: &[String], _: Option<std::time::Duration>) -> Result<crate::launchd::CmdOutput, String> {
+        Err("docker disabled in tests".into())
+    }
 }
 
 impl Effects for Rec {
@@ -27,7 +37,7 @@ impl Effects for Rec {
         self.opened.borrow_mut().push(url.to_string());
     }
     fn docker(&self) -> Arc<dyn Docker> {
-        Arc::new(RealDocker)
+        self.docker.clone().unwrap_or_else(|| Arc::new(NoDocker))
     }
 }
 
