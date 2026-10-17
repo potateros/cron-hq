@@ -116,6 +116,13 @@ impl History {
         Ok(History { db })
     }
 
+    /// Same schema, nothing on disk: the fallback when the real database cannot be opened.
+    pub fn in_memory() -> rusqlite::Result<History> {
+        let db = Connection::open_in_memory()?;
+        db.execute_batch(SCHEMA)?;
+        Ok(History { db })
+    }
+
     pub fn start(&self, job: &str, trigger: Trigger, started_at: i64) -> rusqlite::Result<i64> {
         self.db.query_row(
             "INSERT INTO runs (job, trigger, started_at, status) VALUES (?, ?, ?, 'running') RETURNING id",
@@ -183,6 +190,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = History::open(&dir.path().join("sub/history.db")).unwrap();
         (dir, h)
+    }
+
+    #[test]
+    fn in_memory_has_the_schema() {
+        let h = History::in_memory().unwrap();
+        let id = h.start("a", Trigger::Manual, 1).unwrap();
+        h.finish(id, 2, Some(0), Status::Ok, "t").unwrap();
+        assert_eq!(h.last_real("a").unwrap().unwrap().status, Status::Ok);
     }
 
     #[test]

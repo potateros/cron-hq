@@ -7,13 +7,14 @@ use std::path::{Path, PathBuf};
 
 pub const LABEL_PREFIX: &str = "com.chngu.hq.";
 
+#[derive(Debug)]
 pub struct CmdOutput {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
 }
 
-pub trait Launchctl {
+pub trait Launchctl: Send + Sync {
     fn exec(&self, args: &[&str]) -> CmdOutput;
 }
 
@@ -39,10 +40,13 @@ pub struct FakeLaunchctl {
 
 impl Launchctl for FakeLaunchctl {
     fn exec(&self, args: &[&str]) -> CmdOutput {
-        let _ = std::fs::create_dir_all(&self.paths.home);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.paths.launchctl_calls()) {
-            let _ = writeln!(f, "{}", args.join(" "));
-        }
+        std::fs::create_dir_all(&self.paths.home).expect("fake launchctl: cannot create HQ_HOME");
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.paths.launchctl_calls())
+            .expect("fake launchctl: cannot open launchctl.calls");
+        writeln!(f, "{}", args.join(" ")).expect("fake launchctl: cannot append to launchctl.calls");
         if args.first() == Some(&"print") {
             let id = args.get(1).and_then(|t| t.rsplit('/').next()).unwrap_or("");
             return if self.paths.agents.join(format!("{id}.plist")).exists() {
@@ -159,7 +163,7 @@ pub fn render_plist(job: &Job, ctx: &PlistCtx, paths: &Paths) -> String {
     l.join("\n")
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentState {
     pub linked: bool,
     pub running: bool,
@@ -176,9 +180,7 @@ pub fn agent_state(id: &str, lc: &dyn Launchctl) -> AgentState {
     let mut last_exit = None;
     for line in r.stdout.lines() {
         if let Some(v) = line.strip_prefix("\tstate = ") {
-            if !v.starts_with('\t') {
-                running = v.trim() == "running";
-            }
+            running = v.trim() == "running";
         } else if let Some(v) = line.strip_prefix("\tlast exit code = ") {
             let digits = v.strip_prefix('-').unwrap_or(v);
             let n = digits.chars().take_while(|c| c.is_ascii_digit()).count();
@@ -305,7 +307,7 @@ mod tests {
     use super::*;
     use crate::config::{Job, Schedule};
     use crate::state::{read_paused, set_paused};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     const FIXTURE: &str = "gui/501/com.chngu.hq.demo = {\n\tactive count = 0\n\tpath = /Users/x/Library/LaunchAgents/com.chngu.hq.demo.plist\n\ttype = LaunchAgent\n\tstate = not running\n\n\tprogram = /usr/local/bin/bun\n\tdomain = gui/501 [100033]\n\tminimum runtime = 10\n\texit timeout = 5\n\truns = 73\n\tlast exit code = 0\n\n\tresource coalition = {\n\t\tID = 1298\n\t\ttype = resource\n\t\tstate = active\n\t\tactive count = 1\n\t\tname = com.chngu.hq.demo\n\t}\n}\n";
 
@@ -583,7 +585,4 @@ mod tests {
         std::fs::write(plist_file(&p, "eink"), "<plist/>").unwrap();
         assert_eq!(agent_state("eink", &lc), AgentState { linked: true, running: false, last_exit: None });
     }
-
-    #[allow(dead_code)]
-    fn _unused(_: &Path) {}
 }
