@@ -1,10 +1,8 @@
-#![allow(dead_code)]
-
 use hq::{config, history, launchd, log, paths, runner, snapshot, tui};
 
 use chrono::{Local, TimeZone};
 use config::{load_config, Job};
-use history::{History, Status, Trigger};
+use history::{open_history, Status, Trigger};
 use launchd::{apply_sync, hold, label, launchctl_from_env, plan_sync, resume, uninstall, PlistCtx};
 use log::append_log;
 use paths::Paths;
@@ -49,18 +47,6 @@ fn pad(s: &str, w: usize) -> String {
 fn find_job(paths: &Paths, id: Option<&str>) -> Result<Job, i32> {
     let jobs = load_config(&paths.config).map_err(|e| fail(e, 1))?;
     jobs.into_iter().find(|j| Some(j.id.as_str()) == id).ok_or_else(|| fail(format!("unknown job {}", id.unwrap_or("(none)")), 2))
-}
-
-/// The history plus the reason the real database could not be opened. When even the in-memory
-/// fallback fails there is no history at all and the error is the whole story.
-fn open_history(paths: &Paths) -> (Option<History>, Option<String>) {
-    match History::open(&paths.db()) {
-        Ok(h) => (Some(h), None),
-        Err(e) => match History::in_memory() {
-            Ok(h) => (Some(h), Some(e.to_string())),
-            Err(e2) => (None, Some(format!("{e}; {e2}"))),
-        },
-    }
 }
 
 /// Writes one line to stdout. Err carries the exit code: a closed pipe (`hq status | head -1`) is a quiet 0.
@@ -234,6 +220,18 @@ fn dispatch(args: &[String]) -> i32 {
     let flag = |f: &str| rest.iter().any(|a| a == f);
     let arg = rest.iter().find(|a| !a.starts_with('-')).map(String::as_str);
     let paths = Paths::from_env();
+    let command = args.first().map(String::as_str);
+    if matches!(command, None | Some("status" | "run" | "logs" | "hold" | "resume" | "sync")) {
+        if let Some(msg) = paths::missing_default_config(&paths.config, std::env::var_os("HQ_CONFIG").is_some_and(|v| !v.is_empty())) {
+            if command == Some("run") {
+                if let Some(id) = arg {
+                    // Under launchd nobody sees stderr: leave the reason in the job's log.
+                    let _ = append_log(&paths, id, format!("hq: {msg}\n").as_bytes());
+                }
+            }
+            return fail(msg, 1);
+        }
+    }
     match args.first().map(String::as_str) {
         None => {
             if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
@@ -251,29 +249,20 @@ fn dispatch(args: &[String]) -> i32 {
         Some("hold") => match find_job(&paths, arg) {
             Err(c) => c,
             Ok(job) => match hold(&job.id, &paths, launchctl_from_env(&paths).as_ref()) {
-                Ok(()) => {
-                    println!("{} on hold", job.id);
-                    0
-                }
+                Ok(()) => emit(&format!("{} on hold", job.id)).err().unwrap_or(0),
                 Err(e) => fail(e, 1),
             },
         },
         Some("resume") => match find_job(&paths, arg) {
             Err(c) => c,
             Ok(job) => match resume(&job, &PlistCtx::current(&paths), &paths, launchctl_from_env(&paths).as_ref()) {
-                Ok(()) => {
-                    println!("{} resumed", job.id);
-                    0
-                }
+                Ok(()) => emit(&format!("{} resumed", job.id)).err().unwrap_or(0),
                 Err(e) => fail(e, 1),
             },
         },
         Some("sync") => sync(&paths, flag("--yes")),
         Some("uninstall") => match uninstall(&paths, launchctl_from_env(&paths).as_ref()) {
-            Ok(()) => {
-                println!("removed hq agents; restored migrated/ plists");
-                0
-            }
+            Ok(()) => emit("removed hq agents; restored migrated/ plists").err().unwrap_or(0),
             Err(e) => fail(e, 1),
         },
         Some(_) => {
@@ -284,6 +273,6 @@ fn dispatch(args: &[String]) -> i32 {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     std::process::exit(dispatch(&args));
 }

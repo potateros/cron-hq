@@ -11,7 +11,7 @@ pub mod theme;
 pub mod testing;
 
 use crate::config::load_config;
-use crate::history::History;
+use crate::history::{open_history, History};
 use crate::launchd::{launchctl_from_env, AgentState, SyncPlan};
 use crate::paths::Paths;
 use crate::snapshot::{fetch_agents, load_snapshot, Snapshot};
@@ -409,6 +409,12 @@ pub struct RealEffects {
     docker: Arc<dyn Docker>,
 }
 
+impl Default for RealEffects {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RealEffects {
     pub fn new() -> RealEffects {
         RealEffects { docker: Arc::new(RealDocker) }
@@ -672,16 +678,6 @@ fn stamps(paths: &Paths) -> [Option<SystemTime>; 5] {
     let mut wal = db.clone().into_os_string();
     wal.push("-wal");
     [mtime(&paths.config), mtime(&db), mtime(std::path::Path::new(&wal)), mtime(&paths.state()), mtime(&paths.agents)]
-}
-
-fn open_history(paths: &Paths) -> (Option<History>, Option<String>) {
-    match History::open(&paths.db()) {
-        Ok(h) => (Some(h), None),
-        Err(e) => match History::in_memory() {
-            Ok(h) => (Some(h), Some(e.to_string())),
-            Err(e2) => (None, Some(format!("{e}; {e2}"))),
-        },
-    }
 }
 
 fn until_next_second() -> Duration {

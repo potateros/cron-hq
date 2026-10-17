@@ -57,6 +57,18 @@ impl Paths {
     }
 }
 
+/// The message for a baked-in default config that no longer exists (hq was built from a repo that moved or
+/// was deleted). None when HQ_CONFIG chose the path or the file is there.
+pub fn missing_default_config(config: &Path, from_env: bool) -> Option<String> {
+    if from_env || config.exists() {
+        return None;
+    }
+    Some(format!(
+        "config not found at {} (reinstall hq from its repo: cargo install --path . --root ~/.local --locked --force)",
+        config.display()
+    ))
+}
+
 pub fn expand_home(p: &str) -> PathBuf {
     if p == "~" {
         return home_dir();
@@ -71,6 +83,17 @@ pub fn expand_home(p: &str) -> PathBuf {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn missing_default_config_message() {
+        let gone = Path::new("/nonexistent/jobs.toml");
+        assert_eq!(
+            missing_default_config(gone, false).unwrap(),
+            "config not found at /nonexistent/jobs.toml (reinstall hq from its repo: cargo install --path . --root ~/.local --locked --force)"
+        );
+        assert_eq!(missing_default_config(gone, true), None);
+        assert_eq!(missing_default_config(Path::new("/"), false), None);
+    }
 
     #[test]
     fn temp_layout() {

@@ -1,6 +1,4 @@
 //! hq as a library: the binary in `main.rs` is the CLI, `examples/screenshots.rs` reuses the views.
-#![allow(dead_code)]
-
 pub mod config;
 pub mod history;
 pub mod launchd;

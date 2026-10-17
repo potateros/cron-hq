@@ -583,7 +583,7 @@ mod tests {
     fn fake_print_reflects_plist_presence() {
         let (_d, p) = setup();
         let lc = FakeLaunchctl { paths: p.clone() };
-        assert_eq!(agent_state("eink", &lc).linked, false);
+        assert!(!agent_state("eink", &lc).linked);
         std::fs::write(plist_file(&p, "eink"), "<plist/>").unwrap();
         assert_eq!(agent_state("eink", &lc), AgentState { linked: true, running: false, last_exit: None });
     }

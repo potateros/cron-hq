@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use crate::paths::Paths;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,18 @@ impl History {
 
     pub fn prune(&self, now: i64, max_age_ms: i64) -> rusqlite::Result<usize> {
         self.db.execute("DELETE FROM runs WHERE started_at < ?", params![now - max_age_ms])
+    }
+}
+
+/// The history plus the reason the real database could not be opened. When even the in-memory
+/// fallback fails there is no history at all and the error is the whole story.
+pub fn open_history(paths: &Paths) -> (Option<History>, Option<String>) {
+    match History::open(&paths.db()) {
+        Ok(h) => (Some(h), None),
+        Err(e) => match History::in_memory() {
+            Ok(h) => (Some(h), Some(e.to_string())),
+            Err(e2) => (None, Some(format!("{e}; {e2}"))),
+        },
     }
 }
 

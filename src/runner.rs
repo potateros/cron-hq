@@ -247,7 +247,10 @@ fn execute(job: &Job, paths: &Paths, tail: &mut TailBuffer, opts: &RunOpts, kill
     drop(tx);
 
     let started = Instant::now();
-    let deadline = started + Duration::from_secs(job.timeout_sec);
+    // An absurd timeout_sec would overflow Instant and panic: clamp to a week instead.
+    let deadline = started
+        .checked_add(Duration::from_secs(job.timeout_sec))
+        .unwrap_or_else(|| started + Duration::from_secs(7 * 24 * 3600));
     let mut term_at: Option<Instant> = None;
     let mut kill_sent = false;
     let mut timed_out = false;
@@ -342,8 +345,11 @@ pub fn run_job(job: &Job, paths: &Paths, history: &History, opts: &RunOpts) -> i
 
     let started = (opts.now)();
     let started_ms = started.timestamp_millis();
-    if let Err(e) = history.fail_stale(&job.id, started_ms, "hq: runner died before the run finished") {
-        hist_err(e);
+    // Only the lock holder may call earlier "running" rows dead; unlocked, a live run could be wrongly failed.
+    if locked {
+        if let Err(e) = history.fail_stale(&job.id, started_ms, "hq: runner died before the run finished") {
+            hist_err(e);
+        }
     }
     let run_id = match history.start(&job.id, trigger, started_ms) {
         Ok(id) => Some(id),
@@ -660,6 +666,28 @@ mod tests {
         assert_eq!(row.status, Status::Failed);
         assert!(row.tail.unwrap().contains("runner died"));
         assert!(row.ended_at.is_some());
+    }
+
+    #[test]
+    fn unlocked_run_leaves_running_rows_alone() {
+        let f = fx();
+        // a file where the locks directory should be makes the lock unavailable
+        std::fs::create_dir_all(&f.paths.home).unwrap();
+        std::fs::write(f.paths.home.join("locks"), "x").unwrap();
+        let live = f.history.start("t", Trigger::Scheduled, Local::now().timestamp_millis() - 60_000).unwrap();
+        assert_eq!(run(&f, &job(&f, "true"), &opts(false)), 0);
+        assert!(log(&f).contains("running without lock"));
+        let row = f.history.recent("t", 10).unwrap().into_iter().find(|r| r.id == live).unwrap();
+        assert_eq!(row.status, Status::Running);
+    }
+
+    #[test]
+    fn absurd_timeout_does_not_panic() {
+        let f = fx();
+        let mut j = job(&f, "true");
+        j.timeout_sec = u64::MAX;
+        assert_eq!(run(&f, &j, &opts(false)), 0);
+        assert_eq!(last(&f).status, Status::Ok);
     }
 
     #[test]
