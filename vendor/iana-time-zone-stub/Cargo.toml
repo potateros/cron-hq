@@ -1,0 +1,8 @@
+[package]
+name = "iana-time-zone"
+version = "0.1.65"
+edition = "2021"
+description = "Stub: the real crate links CoreFoundation on macOS, which costs ~4.5 MB of RSS in every hq process"
+
+[features]
+fallback = []

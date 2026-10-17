@@ -17,3 +17,7 @@ unicode-width = "0.2.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# chrono -> iana-time-zone -> CoreFoundation costs ~4.5 MB RSS per process; see the stub's docs.
+[patch.crates-io]
+iana-time-zone = { path = "vendor/iana-time-zone-stub" }

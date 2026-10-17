@@ -1,16 +1,6 @@
 #![allow(dead_code)]
 
-mod config;
-mod history;
-mod launchd;
-mod log;
-mod paths;
-mod runner;
-mod schedule;
-mod snapshot;
-mod stacks;
-mod state;
-mod tui;
+use hq::{config, history, launchd, log, paths, runner, snapshot, tui};
 
 use chrono::{Local, TimeZone};
 use config::{load_config, Job};
