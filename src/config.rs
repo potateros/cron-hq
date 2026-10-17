@@ -326,6 +326,11 @@ every       = "1h"
         assert_eq!(err_of(&one("every = \"5m\"\ncolour = \"red\"", "j")), "jobs.j: unknown key colour");
     }
     #[test]
+    fn first_error_in_file_order() {
+        let text = "[jobs.j]\ncommand = \"true\"\nevery = \"5m\"\nzeta = 1\nalpha = 2\n";
+        assert_eq!(err_of(text), "jobs.j: unknown key zeta");
+    }
+    #[test]
     fn rejects_bad_id() {
         assert_eq!(
             err_of("[jobs.Bad_Id]\ncommand = \"true\"\nevery = \"5m\"\n"),
