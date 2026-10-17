@@ -22,7 +22,7 @@ const SECTIONS: [title: string, rows: Row[]][] = [
   ]],
   ["HISTORY", [["▁  █  ·", "last 10 runs, newest right: ok · fault · skipped"]]],
   ["DETAILS", [
-    ["cmd · dir", "command (run with zsh -lc) and working directory"],
+    ["cmd · dir", "command (run with zsh -lc) and working directory; url: O opens it"],
     ["quiet", "scheduled runs are skipped in this window (R still runs)"],
     ["timeout", "SIGTERM after this long, SIGKILL 10 s later"],
     ["launchd", "linked = loaded · held · unlinked = not loaded"],
@@ -30,7 +30,17 @@ const SECTIONS: [title: string, rows: Row[]][] = [
   ]],
 ];
 
-export function HelpView() {
+const SERVICE_SECTIONS: [title: string, rows: Row[]][] = [
+  ["SERVICES", [
+    ["◉  ○  ◆", "running · stopped or not created · unhealthy, restarting or crashed", color.accent],
+    ["CPU  MEM", "live usage; CPU is % of one core (can pass 100%); amber over 50% or 1 GiB"],
+    ["O · X · Z", "open localhost:<port> · stop/start one service · stop/start the stack"],
+    ["[stacks.x]", "dir = compose project dir; optional files = [...], env_file"],
+  ]],
+];
+
+export function HelpView({ view = "jobs" }: { view?: "jobs" | "services" }) {
+  const sections = view === "services" ? SERVICE_SECTIONS : SECTIONS;
   const { stdout } = useStdout();
   const width = innerWidth(stdout.columns);
   const col = 12;
@@ -41,7 +51,7 @@ export function HelpView() {
         <Text color={color.hold}>esc / H close</Text>
       </Box>
       <Rule width={width} />
-      {SECTIONS.map(([title, rows]) => (
+      {sections.map(([title, rows]) => (
         <Box key={title} flexDirection="column" marginLeft={MARGIN} width={width}>
           <Text color={color.hold}>{title}</Text>
           {rows.map(([sym, meaning, tone]) => (

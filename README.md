@@ -87,8 +87,23 @@ Each job is a `[jobs.<id>]` table. The id must match `[a-z0-9-]+`, and its Launc
 | `quiet` | no | `"23:00-07:00"` | scheduled runs inside it are skipped; can wrap midnight; manual runs still go |
 | `timeout` | no | `"5m"` | `10m`; then SIGTERM to the process group, and SIGKILL 10 s later |
 | `description` | no | string | shown on the dashboard |
+| `url` | no | `"http://localhost:8742/"` | shown in the detail panel; `O` opens it in the browser |
 
 Any other key is an error. A config error stops every job, and each scheduled run records a fault, until you fix it.
+
+### Docker stacks
+
+`[stacks.<name>]` tables list docker compose projects for the TUI's services view (`Tab`). Only the TUI reads them, so a mistake here shows as an error on that stack and never stops a job.
+
+```toml
+[stacks.homelab]
+dir = "~/Developer/potateros/homelab"          # compose project directory
+
+[stacks.terminus]
+dir      = "~/Developer/potateros/trml-byos"
+files    = ["terminus/compose.yml", "compose.override.yml"]   # optional; relative to dir
+env_file = "terminus/.env"                                     # optional; relative to dir
+```
 
 The jobs in this repo:
 
@@ -136,8 +151,24 @@ hq uninstall              # remove every hq agent and restore the plists in migr
 | `R` | run now (manual: ignores hold and quiet hours) and follow the log |
 | `P` | hold / resume |
 | `S` | show the sync plan; `Y` applies it, any other key cancels |
+| `O` | open the job's `url` |
+| `Tab` | switch to the services view (below) |
 | `H` | help screen |
 | `Q` | quit |
+
+When stacks are configured, a `SERVICES` line under the totals shows how many containers are up and their combined CPU and memory.
+
+**Services view** (`Tab`): every service in each stack, including ones that have no container yet, with its state (`◉` running, `○` stopped or not created, `◆` unhealthy, restarting or crashed), live CPU (as % of one core, so it can pass 100%) and memory from `docker stats` (amber over 50% CPU or 1 GiB), and its first published port. Use it to find what is slowing the Mac down and switch it off.
+
+| key | action |
+|---|---|
+| `↑` `↓` | select a service |
+| `O` | open `http://localhost:<port>` |
+| `X` | stop the service, or start it (`docker compose up -d <service>`, which also creates it) |
+| `Z` | stop or start the whole stack; `Y` confirms |
+| `Tab` | back to jobs |
+
+![services view](docs/images/services.png)
 
 The log view follows the file live, with a `▸` cursor on the newest line. `↑↓` move the cursor (moving up stops following), `PgUp`/`PgDn` page, `g` jumps to the top and `G` back to live. Long lines are cut with `…`: `⏎` (or space) expands the selected line in full and collapses it again, and `w` wraps every line. `esc` goes back.
 
@@ -263,6 +294,7 @@ Source layout:
 | `src/launchd.ts` | plist rendering, sync plan/apply, hold, resume, uninstall |
 | `src/snapshot.ts` | everything the dashboard shows, in one read |
 | `src/state.ts` | held jobs (`state.json`) |
-| `src/tui/` | Ink components: `App`, `Dashboard`, `JobRow`, `DetailPanel`, `LogView`, `HelpView`, `theme` |
+| `src/stacks.ts` | `[stacks.*]` parsing and docker compose status, stats, start/stop for the services view |
+| `src/tui/` | Ink components: `App`, `Dashboard`, `JobRow`, `DetailPanel`, `LogView`, `ServicesView`, `HelpView`, `theme` |
 
 Design history: [spec](docs/superpowers/specs/2026-10-16-hq-command-centre-design.md) and [implementation plan](docs/superpowers/plans/2026-10-16-hq-command-centre.md).

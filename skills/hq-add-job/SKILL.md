@@ -26,8 +26,9 @@ Get these from the user or the project. Ask only for what you can't infer:
 | `quiet` | no | `"HH:MM-HH:MM"` | scheduled runs inside it are skipped (wraps midnight); manual runs still go |
 | `timeout` | no | `"5m"` | default 10m; SIGTERM, then SIGKILL 10 s later |
 | `description` | no | string | shown on the dashboard; keep it short |
+| `url` | no | `"http://…"` | shown in the detail panel; `O` opens it (e.g. a launcher's local web page) |
 
-No other keys exist: an unknown key is a config error that faults **every** job until fixed.
+No other job keys exist (`[stacks.*]` tables are separate: docker compose projects for the TUI's services view): an unknown key is a config error that faults **every** job until fixed.
 
 ## 2. Check the command works the way launchd will run it
 

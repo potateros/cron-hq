@@ -27,6 +27,7 @@ export function DetailPanel({ view, width }: { view: JobView; width: number }) {
       <Box flexDirection="column" marginLeft={INDENT} width={inner}>
         <Text wrap="truncate-end">{field("cmd", job.command)}</Text>
         <Text wrap="truncate-end">{field("dir", job.cwd)}</Text>
+        {job.url ? <Text wrap="truncate-end">{field("url", `${job.url}  (O opens)`)}</Text> : null}
         <Text wrap="truncate-end">
           {field("quiet", quiet.padEnd(18))}
           {field("timeout", formatSeconds(job.timeoutSec).padEnd(8))}

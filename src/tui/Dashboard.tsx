@@ -4,7 +4,7 @@ import { DetailPanel } from "./DetailPanel";
 import { JobRow } from "./JobRow";
 import { clockLine, color, innerWidth, MARGIN } from "./theme";
 
-export const KEYS = "↑↓ select   ⏎ logs   R run   P hold   S sync   H help   Q exit";
+export const KEYS = "↑↓ select   ⏎ logs   R run   P hold   S sync   O open   Tab services   H help   Q exit";
 
 export const Rule = ({ width }: { width: number }) => (
   <Box marginLeft={MARGIN}>
@@ -14,7 +14,8 @@ export const Rule = ({ width }: { width: number }) => (
 
 const n2 = (n: number) => String(n).padStart(2, "0");
 
-export function Dashboard({ snapshot, selected, now }: { snapshot: Snapshot; selected: number; now: Date }) {
+/** `services`: one-line docker summary ("6/30 up · cpu …"), or null when no stacks are configured. */
+export function Dashboard({ snapshot, selected, now, services = null }: { snapshot: Snapshot; selected: number; now: Date; services?: string | null }) {
   const { stdout } = useStdout();
   const width = innerWidth(stdout.columns);
   const sum = summarize(snapshot);
@@ -37,6 +38,12 @@ export function Dashboard({ snapshot, selected, now }: { snapshot: Snapshot; sel
         <Text color={sum.fault ? color.fault : color.body}>{`FAULT ${n2(sum.fault)}`}</Text>
         <Text color={color.body}>{`STANDBY ${n2(sum.standby)}`}</Text>
       </Box>
+      {services ? (
+        <Box marginLeft={MARGIN} width={width} justifyContent="space-between">
+          <Text color={color.hold}>{`SERVICES ${services}`}</Text>
+          <Text color={color.hold}>Tab ▸</Text>
+        </Box>
+      ) : null}
       <Rule width={width} />
       {snapshot.jobs.map((v, i) => (
         <JobRow key={v.job.id} view={v} selected={i === selected} now={now} width={width} />

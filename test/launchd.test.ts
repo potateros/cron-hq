@@ -9,7 +9,7 @@ import { tempHome } from "./helpers";
 
 const uid = process.getuid!();
 const ctx = { bunPath: "/opt/bun", cliPath: "/repo/src/cli.ts", hqHome: "/hqhome" };
-const every: Job = { id: "eink", description: "", command: "x", cwd: "/", quiet: null, timeoutSec: 60, schedule: { kind: "every", seconds: 1800 } };
+const every: Job = { id: "eink", description: "", command: "x", cwd: "/", quiet: null, timeoutSec: 60, url: null, schedule: { kind: "every", seconds: 1800 } };
 const at: Job = { ...every, id: "wipe", schedule: { kind: "at", times: [{ hour: 6, minute: 55 }, { hour: 19, minute: 30 }] } };
 
 function fakeExec(respond: (args: string[]) => { code: number; stdout?: string; stderr?: string } = () => ({ code: 0 })) {

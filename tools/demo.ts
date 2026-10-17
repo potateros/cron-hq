@@ -1,5 +1,6 @@
 /** Demo data for tools/screenshots.tsx: the real job set, with made-up runs. */
 import type { Job } from "../src/config";
+import type { ServiceView, StackView } from "../src/stacks";
 import type { RunRow, Status } from "../src/history";
 import type { JobView, Snapshot } from "../src/snapshot";
 
@@ -12,7 +13,7 @@ const run = (job: string, status: Status, startedAt: number, secs: number, exitC
   exitCode, status, reason: status === "skipped" ? "quiet" : null, tail,
 });
 const job = (j: Partial<Job> & Pick<Job, "id" | "command" | "schedule">): Job => ({
-  description: "", cwd: "~/Developer/potateros", quiet: null, timeoutSec: 600, ...j,
+  description: "", cwd: "~/Developer/potateros", quiet: null, timeoutSec: 600, url: null, ...j,
 });
 const linked = { linked: true, running: false, lastExit: 0 };
 const every = (from: number, mins: number, n: number, f: (t: number, i: number) => RunRow) =>
@@ -72,3 +73,32 @@ export const demoLog = [
   "── END 0418 · NOMINAL · 1m14s · exit 0 ──",
   "",
 ].join("\n");
+
+// ─── services view ──────────────────────────────────────────────────────────
+
+const GiB = 1024 ** 3;
+const MiB = 1024 ** 2;
+const svc = (stack: string, service: string, image: string, ports: number[], state: ServiceView["state"], cpu: number | null, mem: number | null, status = "Up 6 hours", exitCode = 0): ServiceView => ({
+  stack, service, container: state === "missing" ? null : service, image, ports, state, health: "", status, exitCode, cpu, mem,
+});
+const homelab = [
+  svc("homelab", "jellyfin", "jellyfin/jellyfin:latest", [8096], "running", 84.2, 1.9 * GiB),
+  svc("homelab", "radarr", "lscr.io/linuxserver/radarr:latest", [7878], "running", 3.1, 412 * MiB),
+  svc("homelab", "sonarr", "lscr.io/linuxserver/sonarr:latest", [8989], "running", 2.4, 388 * MiB),
+  svc("homelab", "prowlarr", "lscr.io/linuxserver/prowlarr:latest", [9696], "exited", null, null, "Exited (0) 2 hours ago"),
+  svc("homelab", "qbittorrent", "lscr.io/linuxserver/qbittorrent:latest", [8080], "exited", null, null, "Exited (0) 2 hours ago"),
+  svc("homelab", "tdarr", "haveagitgat/tdarr:latest", [8265], "running", 61.7, 1.2 * GiB),
+  svc("homelab", "immich-server", "ghcr.io/immich-app/immich-server:release", [2283], "restarting", 0, 96 * MiB, "Restarting (1) 4 seconds ago", 1),
+  svc("homelab", "vaultwarden", "vaultwarden/server:latest", [8222], "running", 0.1, 34 * MiB, "Up 2 days"),
+  svc("homelab", "korrosync", "szaffarano/korrosync:latest", [7200], "running", 0, 0.9 * MiB, "Up 39 hours"),
+  svc("homelab", "navidrome", "deluan/navidrome:latest", [4533], "missing", null, null, "no container"),
+];
+const terminus = [
+  svc("terminus", "web", "ghcr.io/usetrmnl/terminus:latest", [2300], "running", 0.2, 311 * MiB, "Up 39 hours"),
+  svc("terminus", "worker", "ghcr.io/usetrmnl/terminus:latest", [], "running", 0.3, 87 * MiB, "Up 39 hours"),
+  svc("terminus", "database", "postgres:17", [5432], "running", 0, 50 * MiB, "Up 39 hours"),
+];
+export const demoStacks: StackView[] = [
+  { stack: { name: "homelab", dir: "~/Developer/potateros/homelab", files: [], envFile: null }, services: homelab, error: null },
+  { stack: { name: "terminus", dir: "~/Developer/potateros/trml-byos", files: [], envFile: null }, services: terminus, error: null },
+];

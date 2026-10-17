@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { render } from "ink-testing-library";
-import { Dashboard } from "../../src/tui/Dashboard";
+import { Dashboard, KEYS } from "../../src/tui/Dashboard";
 import { NOW, snapshot, views } from "../fixtures/snapshot";
 
 const frame = (selected = 0, snap = snapshot) => render(<Dashboard snapshot={snap} selected={selected} now={NOW} />).lastFrame()!;
@@ -48,7 +48,7 @@ describe("Dashboard", () => {
     expect(frame(1)).toContain("▸  TAILSCALE-WATCHDOG");
   });
 
-  test("footer keys", () => expect(frame()).toContain("↑↓ select   ⏎ logs   R run   P hold   S sync   H help   Q exit"));
+  test("footer keys", () => expect(frame()).toContain(KEYS));
 
   test("config error banner keeps the job list", () => {
     const f = frame(0, { ...snapshot, configError: "jobs.eink: unknown key colour" });

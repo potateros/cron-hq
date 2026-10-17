@@ -16,8 +16,9 @@ const { render } = await import("ink-testing-library");
 const { Dashboard } = await import("../src/tui/Dashboard");
 const { HelpView } = await import("../src/tui/HelpView");
 const { LogView } = await import("../src/tui/LogView");
+const { ServicesView } = await import("../src/tui/ServicesView");
 const { appendLog } = await import("../src/log");
-const { demoLog, NOW, snapshot } = await import("./demo");
+const { demoLog, demoStacks, NOW, snapshot } = await import("./demo");
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const OUT = resolve(import.meta.dir, "..", "docs", "images");
@@ -93,4 +94,5 @@ await shoot("dashboard", <Dashboard snapshot={snapshot} selected={0} now={NOW} /
 await shoot("dashboard-fault", <Dashboard snapshot={snapshot} selected={2} now={NOW} />);
 await shoot("help", <HelpView />);
 await shoot("log", <LogView id="eink-weather" follow={false} />);
+await shoot("services", <ServicesView stacks={demoStacks} error={null} selected={0} now={NOW} pending={new Map([["homelab/sonarr", "stopping"]])} prompt={null} />);
 process.exit(0);

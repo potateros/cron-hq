@@ -17,7 +17,7 @@ beforeEach(() => {
 });
 
 const job = (command: string, over: Partial<Job> = {}): Job => ({
-  id: "t", description: "", command, cwd: dir, quiet: null, timeoutSec: 60,
+  id: "t", description: "", command, cwd: dir, quiet: null, timeoutSec: 60, url: null,
   schedule: { kind: "every", seconds: 300 }, ...over,
 });
 const last = () => history.recent("t", 1)[0]!;

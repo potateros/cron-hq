@@ -28,7 +28,7 @@ The LaunchAgents in `~/Library/LaunchAgents` run this checkout's `src/cli.ts` on
 
 ```sh
 bun install
-bun test                                  # 100 tests; all use temp dirs + fake launchctl (test/helpers.ts tempHome())
+bun test                                  # 125 tests; all use temp dirs + fake launchctl (test/helpers.ts tempHome())
 bun test test/runner.test.ts              # one file
 bun test -t "SIGTERM"                     # by test name
 bunx tsc --noEmit                         # typecheck (known: stdout.columns/rows typing errors in Dashboard/LogView)
@@ -59,10 +59,11 @@ HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 bun src/cli.ts   # TUI against an empty
   - `agentState`: parses `launchctl print`, top-level keys only.
   - Every launchctl call goes through the injected `Exec`. `src/exec.ts` picks the real or fake one via `HQ_FAKE_LAUNCHCTL`.
 - `src/snapshot.ts`: `loadSnapshot` is everything the TUI shows, in one read. On a `ConfigError` it keeps the previous job list.
+- `src/stacks.ts`: `[stacks.*]` from `jobs.toml` (TUI only: `parseConfig` accepts the table but never validates it, so a stack mistake can't stop a job). Wraps `docker compose config/ps` and `docker stats` behind an injected `DockerExec`; the compose config is cached by file mtimes.
 - `src/paths.ts`: every path, with the env overrides `HQ_HOME`, `HQ_CONFIG`, `HQ_LAUNCH_AGENTS_DIR` and `HQ_MIGRATED_DIR`.
 - `src/tui/`:
-  - `App`: modes are dash, log, help and sync. It reloads the snapshot every 2 s and ticks the clock every 1 s. A failed load shows an `ERROR —` banner and keeps the last snapshot.
-  - The other components: `Dashboard`, `JobRow`, `DetailPanel`, `LogView` and `HelpView`.
+  - `App`: views are jobs and services (`Tab`); modes are dash, log, help, sync and stack (the `Z` confirm). It reloads the snapshot every 2 s, docker state every 3 s and `docker stats` every 5 s (it takes ~2 s), and ticks the clock every 1 s. A failed load shows an `ERROR —` banner and keeps the last snapshot.
+  - The other components: `Dashboard`, `JobRow`, `DetailPanel`, `LogView`, `ServicesView` and `HelpView`.
   - `theme.ts`: colours, `MARGIN`, `INDENT`, `innerWidth()` and `clampLines()`.
 
 ## TUI rules (owner preferences)

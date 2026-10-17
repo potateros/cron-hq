@@ -5,7 +5,7 @@ import { describeSchedule, formatCountdown, inQuiet, nextRun } from "../src/sche
 const d = (day: number, h: number, m: number) => new Date(2026, 9, day, h, m, 0, 0); // Oct 2026, local time
 const NIGHT = { start: 23 * 60, end: 7 * 60 };
 const job = (over: Partial<Job>): Job => ({
-  id: "j", description: "", command: "true", cwd: "/", quiet: null, timeoutSec: 600,
+  id: "j", description: "", command: "true", cwd: "/", quiet: null, timeoutSec: 600, url: null,
   schedule: { kind: "every", seconds: 1800 }, ...over,
 });
 

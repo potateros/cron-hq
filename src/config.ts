@@ -20,6 +20,7 @@ export interface Job {
   schedule: Schedule;
   quiet: QuietWindow | null;
   timeoutSec: number;
+  url: string | null; // shown in the detail panel; O opens it
 }
 
 export class ConfigError extends Error {
@@ -27,7 +28,7 @@ export class ConfigError extends Error {
 }
 
 const ID_RE = /^[a-z0-9-]+$/;
-const KEYS = new Set(["description", "cwd", "command", "every", "at", "manual", "quiet", "timeout"]);
+const KEYS = new Set(["description", "cwd", "command", "every", "at", "manual", "quiet", "timeout", "url"]);
 const UNIT = { s: 1, m: 60, h: 3600 } as const;
 
 export function parseDuration(s: string): number {
@@ -107,6 +108,8 @@ function parseJob(id: string, raw: Record<string, unknown>): Job {
 
   const quiet = str("quiet");
   const timeout = str("timeout");
+  const url = str("url");
+  if (url !== undefined && !/^https?:\/\/\S+$/.test(url)) fail(`url must start with http:// or https://`);
   return {
     id,
     description: str("description") ?? "",
@@ -115,6 +118,7 @@ function parseJob(id: string, raw: Record<string, unknown>): Job {
     schedule,
     quiet: quiet === undefined ? null : wrap("quiet", () => parseQuiet(quiet)),
     timeoutSec: timeout === undefined ? 600 : wrap("timeout", () => parseDuration(timeout)),
+    url: url ?? null,
   };
 }
 
@@ -125,7 +129,8 @@ export function parseConfig(text: string): Job[] {
   } catch (e) {
     throw new ConfigError(`invalid TOML: ${(e as Error).message}`);
   }
-  for (const key of Object.keys(doc)) if (key !== "jobs") throw new ConfigError(`unknown top-level key ${key}`);
+  // [stacks.*] is read by the TUI only (src/stacks.ts), so a mistake there never stops a job from running.
+  for (const key of Object.keys(doc)) if (key !== "jobs" && key !== "stacks") throw new ConfigError(`unknown top-level key ${key}`);
   const jobs = (doc.jobs ?? {}) as Record<string, Record<string, unknown>>;
   return Object.entries(jobs)
     .map(([id, raw]) => parseJob(id, raw))

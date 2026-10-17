@@ -11,7 +11,7 @@ const run = (job: string, status: Status, startedAt: number, secs = 41, exitCode
   reason: status === "skipped" ? "quiet" : null, tail,
 });
 const job = (id: string, over: Partial<Job> = {}): Job => ({
-  id, description: "", command: "true", cwd: "/tmp", quiet: null, timeoutSec: 600,
+  id, description: "", command: "true", cwd: "/tmp", quiet: null, timeoutSec: 600, url: null,
   schedule: { kind: "every", seconds: 1800 }, ...over,
 });
 const linked = { linked: true, running: false, lastExit: 0 };
