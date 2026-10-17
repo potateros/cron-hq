@@ -209,8 +209,8 @@ fn usage_and_no_command() {
     assert_eq!(r.code(), 2);
     assert!(r.err().starts_with("usage: hq [status [--json]"), "{}", r.err());
     let r = fx.hq(&[]);
-    assert_eq!(r.code(), 0);
-    assert_eq!(r.out(), "tui: not yet\n");
+    assert_eq!(r.code(), 2);
+    assert_eq!(r.err(), "hq: the TUI needs a terminal\n");
 }
 
 #[test]

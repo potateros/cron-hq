@@ -10,6 +10,7 @@ mod schedule;
 mod snapshot;
 mod stacks;
 mod state;
+mod tui;
 
 use chrono::{Local, TimeZone};
 use config::{load_config, Job};
@@ -245,8 +246,14 @@ fn dispatch(args: &[String]) -> i32 {
     let paths = Paths::from_env();
     match args.first().map(String::as_str) {
         None => {
-            println!("tui: not yet");
-            0
+            if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                eprintln!("hq: the TUI needs a terminal");
+                return 2;
+            }
+            match tui::run(paths) {
+                Ok(()) => 0,
+                Err(e) => fail(e, 1),
+            }
         }
         Some("status") => status(&paths, flag("--json")),
         Some("run") => run(&paths, arg, flag("--manual")),
