@@ -8,6 +8,7 @@ mod paths;
 mod runner;
 mod schedule;
 mod snapshot;
+mod stacks;
 mod state;
 
 use chrono::{Local, TimeZone};
