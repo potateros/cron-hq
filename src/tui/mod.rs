@@ -4,6 +4,7 @@
 mod canvas;
 pub mod help;
 pub mod jobs;
+pub mod logview;
 pub mod theme;
 #[cfg(test)]
 pub mod testing;
@@ -118,8 +119,8 @@ pub struct App {
     /// Selected job row and service row.
     pub selected: usize,
     pub svc_selected: usize,
-    /// Selected log line (the log view owns what it means).
-    pub log_cursor: usize,
+    /// The open log; replaced by a fresh one every time a log is opened.
+    pub log: logview::LogState,
     /// `None` until docker has answered once.
     pub stacks: Option<Vec<StackView>>,
     pub usage: HashMap<String, Usage>,
@@ -160,7 +161,7 @@ impl App {
             snap: None,
             selected: 0,
             svc_selected: 0,
-            log_cursor: 0,
+            log: logview::LogState::default(),
             stacks: None,
             usage: HashMap::new(),
             agents: HashMap::new(),
@@ -311,7 +312,9 @@ impl App {
     fn services_key(&mut self, _ev: KeyEvent, _fx: &dyn Effects) {}
 
     /// Keys inside the log view other than Esc.
-    fn log_key(&mut self, _ev: KeyEvent, _fx: &dyn Effects) {}
+    fn log_key(&mut self, ev: KeyEvent, _fx: &dyn Effects) {
+        self.log.handle_key(ev);
+    }
 
     /// Y on a stack prompt: run the compose command and mark the affected rows pending.
     fn confirm_stack(&mut self, _fx: &dyn Effects) {}
@@ -371,10 +374,10 @@ impl App {
                 self.selected = i;
             }
             Some(Hit::LogLine(i)) => {
-                if i == self.log_cursor {
+                if i == self.log.selected() {
                     return self.handle_key(key(KeyCode::Enter), fx);
                 }
-                self.log_cursor = i;
+                self.log.select(i);
             }
             Some(Hit::Service(i)) => {
                 if i == self.svc_selected {
@@ -437,7 +440,7 @@ impl Effects for RealEffects {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.hits.clear();
     match (&app.mode, app.view) {
-        (Mode::Log(_), _) => draw_log(frame, app),
+        (Mode::Log(id), _) => logview::draw_log(frame, &mut app.log, id, &mut app.hits),
         (Mode::Help, _) => help::draw_help(frame, app.view),
         (_, View::Jobs) => jobs::draw_jobs(frame, app),
         (_, View::Services) => draw_services(frame, app),
@@ -448,9 +451,6 @@ fn draw_title(frame: &mut Frame, title: &str) {
     frame.render_widget(Paragraph::new(title.to_string()), frame.area());
 }
 
-fn draw_log(frame: &mut Frame, _app: &mut App) {
-    draw_title(frame, "HQ · LOG");
-}
 fn draw_services(frame: &mut Frame, _app: &mut App) {
     draw_title(frame, "HQ · SERVICES");
 }
@@ -780,6 +780,10 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, paths: &Pat
     let result = (|| -> io::Result<()> {
         loop {
             app.now = Local::now();
+            // Following the log: one stat per wake (a second at the longest) while it is open.
+            if app.refresh_log() {
+                app.dirty = true;
+            }
             if term.load(Ordering::Relaxed) {
                 return Ok(());
             }
@@ -958,7 +962,7 @@ mod tests {
         assert_eq!(a.selected, 2);
         assert!(a.handle_mouse(scroll(true), &fx));
         assert_eq!(a.selected, 1, "wheel up = Up x1");
-        // The log's x3 scroll is asserted in Task 9, once `log_key` exists; here it must not leave the log.
+        // The log's x3 scroll is asserted in logview::tests::wheel_scrolls_three_lines; here it must not leave the log.
         a.mode = Mode::Log("x".into());
         assert!(a.handle_mouse(scroll(false), &fx));
         assert!(matches!(a.mode, Mode::Log(_)));

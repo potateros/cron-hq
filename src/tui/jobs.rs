@@ -361,7 +361,8 @@ impl App {
             KeyCode::Down => self.selected = (cur + 1).min(count.saturating_sub(1)),
             KeyCode::Enter => {
                 if let Some(v) = self.current_job() {
-                    self.mode = Mode::Log(v.job.id.clone());
+                    let id = v.job.id.clone();
+                    self.open_log(id);
                 }
             }
             KeyCode::Char(c) => match c.to_ascii_lowercase() {
@@ -369,7 +370,7 @@ impl App {
                     if let Some(id) = self.current_job().map(|v| v.job.id.clone()) {
                         fx.spawn_cli(&["run", &id, "--manual"]);
                         self.refresh.agents = true;
-                        self.mode = Mode::Log(id);
+                        self.open_log(id);
                     }
                 }
                 'p' => {
