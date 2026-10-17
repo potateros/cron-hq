@@ -2,7 +2,7 @@
 # Schedules: every = "30m" | at = ["06:55"]. Optional: cwd, quiet = "HH:MM-HH:MM", timeout, description.
 
 [jobs.eink-weather]
-description = "Punggol weather → nRF e-ink"
+description = "Punggol weather → nRF e-ink (auto: rain if heavy rain ahead, else proverb)"
 cwd         = "~/Developer/potateros/nrf5-eink"
 command     = "uv run python -m epd.cli --push"
 every       = "30m"
