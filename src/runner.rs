@@ -7,7 +7,9 @@ use crate::state::read_paused;
 use chrono::{DateTime, Local};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::SigId;
+use std::ffi::OsString;
 use std::io::Read;
+use std::path::Path;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,23 +43,32 @@ pub fn format_duration(ms: i64) -> String {
 
 /// launchd starts us with PATH=/usr/bin:/bin, and `zsh -lc` only adds what ~/.zprofile sets (Homebrew).
 /// User tool dirs are usually added in ~/.zshrc, which non-interactive shells skip, so add the common ones.
-pub fn job_env() -> Vec<(String, String)> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").ok().filter(|p| !p.is_empty());
-    let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "PATH").collect();
-    env.push(("PATH".into(), build_path(&home, path.as_deref())));
-    env
+pub fn job_env() -> Vec<(OsString, OsString)> {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    job_env_from(std::env::vars_os(), Path::new(&home))
 }
 
-fn build_path(home: &str, existing: Option<&str>) -> String {
-    [
-        &format!("{home}/.local/bin"),
-        &format!("{home}/.bun/bin"),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        existing.unwrap_or("/usr/bin:/bin"),
-    ]
-    .join(":")
+/// Takes the variables as an argument so tests never touch the real process environment.
+/// Uses OsStrings throughout: `std::env::vars()` panics on non-Unicode values.
+fn job_env_from(vars: impl Iterator<Item = (OsString, OsString)>, home: &Path) -> Vec<(OsString, OsString)> {
+    let mut path = None;
+    let mut env: Vec<(OsString, OsString)> = Vec::new();
+    for (k, v) in vars {
+        if k == "PATH" {
+            path = Some(v).filter(|p| !p.is_empty());
+        } else {
+            env.push((k, v));
+        }
+    }
+    let mut out = OsString::new();
+    for dir in [home.join(".local/bin"), home.join(".bun/bin")] {
+        out.push(dir);
+        out.push(":");
+    }
+    out.push("/opt/homebrew/bin:/usr/local/bin:");
+    out.push(path.unwrap_or_else(|| OsString::from("/usr/bin:/bin")));
+    env.push((OsString::from("PATH"), out));
+    env
 }
 
 fn is_alive(pid: i32) -> bool {
@@ -149,7 +160,9 @@ fn spawn_reader<R: Read + Send + 'static>(mut r: R, tx: mpsc::Sender<Event>) {
     });
 }
 
-/// Forwarded-signal flags; handlers are removed on drop so a test (or caller) is never left unkillable.
+/// Forwarded-signal flags. Dropping this unregisters our actions, but signal-hook leaves its handler
+/// installed for the rest of the process (it does not restore the default disposition). That is fine:
+/// `hq run` is one-shot, and the TUI spawns `hq run` as a separate process.
 struct Forwarded {
     flags: Vec<(&'static str, Arc<AtomicBool>)>,
     ids: Vec<SigId>,
@@ -202,7 +215,6 @@ fn execute(job: &Job, paths: &Paths, tail: &mut TailBuffer, opts: &RunOpts, kill
     let mut cmd = Command::new("/bin/zsh");
     cmd.args(["-lc", &job.command])
         .current_dir(&job.cwd)
-        .env_clear()
         .envs(job_env())
         .process_group(0)
         .stdin(Stdio::null())
@@ -295,7 +307,7 @@ fn execute(job: &Job, paths: &Paths, tail: &mut TailBuffer, opts: &RunOpts, kill
             break;
         }
     }
-    if timed_out {
+    if timed_out || killed_by.is_some() {
         killpg(pgid, libc::SIGKILL); // make sure no stragglers survive in the group
     }
     Outcome { code: if timed_out { None } else { Some(exit.unwrap_or(1)) }, timed_out }
@@ -608,14 +620,20 @@ mod tests {
     }
 
     #[test]
-    fn build_path_prefixes_and_defaults() {
-        assert_eq!(
-            build_path("/h", Some("/usr/bin:/bin")),
-            "/h/.local/bin:/h/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        );
-        assert!(build_path("/h", None).ends_with(":/usr/bin:/bin"));
-        let env = job_env();
-        assert_eq!(env.iter().filter(|(k, _)| k == "PATH").count(), 1);
+    fn job_env_prefixes_path_and_survives_non_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        let os = |s: &str| OsString::from(s);
+        let bad = OsString::from_vec(vec![b'x', 0xff, 0xfe]);
+        let vars = vec![(os("A"), bad.clone()), (os("PATH"), os("/usr/bin:/bin")), (os("B"), os("b"))];
+        let env = job_env_from(vars.into_iter(), Path::new("/h"));
+        assert!(env.contains(&(os("A"), bad)));
+        assert!(env.contains(&(os("B"), os("b"))));
+        let paths: Vec<_> = env.iter().filter(|(k, _)| k == "PATH").collect();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].1, os("/h/.local/bin:/h/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"));
+        let unset = job_env_from(std::iter::empty(), Path::new("/h"));
+        assert_eq!(unset, vec![(os("PATH"), os("/h/.local/bin:/h/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"))]);
+        assert_eq!(job_env().iter().filter(|(k, _)| k == "PATH").count(), 1);
     }
 
     #[test]
@@ -679,12 +697,12 @@ mod tests {
     fn forwarded_sigterm_stops_the_job_and_is_recorded_as_failed() {
         let f = fx();
         let marker = f.dir.path().join("started");
-        let j = job(&f, &format!("touch '{}'; sleep 30", marker.display()));
+        let j = job(&f, &format!("sh -c 'trap \"\" TERM; echo $$ > \"{}\"; sleep 30' & wait", marker.display()));
         let _g = SIGNAL_GATE.write().unwrap_or_else(|e| e.into_inner());
         let m = marker.clone();
         let sender = std::thread::spawn(move || {
             for _ in 0..200 {
-                if m.exists() {
+                if std::fs::read_to_string(&m).is_ok_and(|s| s.trim().parse::<i32>().is_ok()) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(25));
@@ -701,6 +719,17 @@ mod tests {
         let l = log(&f);
         assert!(l.contains("hq: killed by SIGTERM") && l.contains(" · FAULT · "), "{l}");
         assert!(!f.paths.lock("t").exists());
+        // The TERM-ignoring grandchild must have been SIGKILLed with the group, not orphaned.
+        let pid: i32 = std::fs::read_to_string(&marker).unwrap().trim().parse().unwrap();
+        let mut gone = false;
+        for _ in 0..40 {
+            if !is_alive(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(gone, "grandchild {pid} survived");
     }
 
     #[test]
