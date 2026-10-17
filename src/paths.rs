@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone)]
 pub struct Paths {
     pub home: PathBuf,
     pub config: PathBuf,

@@ -2,6 +2,7 @@
 
 mod config;
 mod history;
+mod launchd;
 mod log;
 mod paths;
 mod schedule;
