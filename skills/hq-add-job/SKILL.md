@@ -42,7 +42,7 @@ Only do this when running the job is harmless, e.g. it doesn't push to a device 
 
 - **Exit status:** the job must exit 0 on success and non-zero on failure, because hq uses the exit code for OK and FAULT.
 - **Output:** the last line of output is shown on the dashboard, so it should say what happened.
-- **macOS privacy (TCC):** under launchd, Bluetooth, Reminders, Calendar, Photos and so on are granted to the responsible process, `~/.bun/bin/bun`, not to the terminal. Bluetooth is already granted to bun. For anything else, warn the user that the first scheduled run may fail with "denied", and tell them where to grant it: System Settings → Privacy & Security.
+- **macOS privacy (TCC):** under launchd, Bluetooth, Reminders, Calendar, Photos and so on are granted to the responsible process, which under hq is `~/.local/bin/hq` (the runner), not the terminal. Check that `hq` already has the grant you need. For anything else, warn the user that the first scheduled run may fail with "denied", and tell them where to grant it: System Settings → Privacy & Security.
 
 ## 3. Add it
 
@@ -67,7 +67,7 @@ Only do this when running the job is harmless, e.g. it doesn't push to a device 
 
 ## Changing or removing a job
 
-- **No sync needed:** `command`, `cwd`, `quiet`, `timeout` and `description` are re-read on every run.
+- **No sync and no reinstall needed:** `command`, `cwd`, `quiet`, `timeout` and `description` take effect on the next run, because the runner re-reads `jobs.toml` every time.
 - **Changes to `every` or `at`:** run `hq sync --yes`. It reports `~ <id>`.
 - **Removing a job:** delete the block, then `hq sync --yes`. It reports `- <id>`, unloads the agent and deletes its plist. Logs and history stay in `~/Library/Application Support/hq/`.
 - **Pausing without deleting:** `hq hold <id>`, then `hq resume <id>`. In the TUI, press `P`.

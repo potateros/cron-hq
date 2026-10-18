@@ -19,6 +19,7 @@ Each job's code stays in its own project. hq only knows the folder to run in and
 - [Migrating existing LaunchAgents and uninstalling](#migrating-existing-launchagents-and-uninstalling)
 - [Claude Code skill](#claude-code-skill)
 - [Troubleshooting](#troubleshooting)
+- [Performance](#performance)
 - [Development](#development)
 
 ## Features
@@ -31,7 +32,7 @@ Each job's code stays in its own project. hq only knows the folder to run in and
   - **timeouts:** SIGTERM, then SIGKILL, sent to the whole process group.
   A stopped or killed run is still recorded.
 - **Per-job logs and SQLite history.** Every run gets a numbered `RUN`/`END` block in the job's log. The runs table keeps 90 days.
-- **A live TUI** built with Ink and React. It shows each job's status, a countdown to its next run, its last 10 runs and its latest output. You can open a scrolling log, run a job now, hold or resume it, and sync, all without leaving the dashboard. Press `H` for help on what each symbol means.
+- **A live TUI** built with Rust and ratatui. It shows each job's status, a countdown to its next run, its last 10 runs and its latest output. You can open a scrolling log, run a job now, hold or resume it, and sync, all without leaving the dashboard. Press `H` for help on what each symbol means.
 - **Fault tolerant.** Each of these shows up as a fault on the dashboard instead of being silently skipped:
   - a broken `jobs.toml`;
   - a missing directory;
@@ -41,19 +42,20 @@ Each job's code stays in its own project. hq only knows the folder to run in and
 
 ## Install
 
-You need macOS, [Bun](https://bun.sh) 1.3 or later, and git.
+You need macOS, a Rust toolchain ([rustup](https://rustup.rs)) and git.
 
 ```sh
 git clone https://github.com/potateros/homelab-hq.git ~/Developer/potateros/homelab-hq
 cd ~/Developer/potateros/homelab-hq
-bun install
-bun link              # puts `hq` on your PATH (~/.bun/bin/hq)
-bun test              # 90 tests, all run against temp dirs and a fake launchctl
+cargo test --locked                                    # all tests run against temp dirs and a fake launchctl
+cargo install --path . --root ~/.local --locked --force
+export PATH="$HOME/.local/bin:$PATH"                   # add to ~/.zshrc if `~/.local/bin` isn't on PATH yet
+hq sync
 ```
 
-Then edit `jobs.toml` and run `hq sync`.
+Then edit `jobs.toml` and run `hq sync` again.
 
-> The LaunchAgents pin the absolute paths to `bun` and to `src/cli.ts`. If you move the repo or bun moves, run `bun link` and `hq sync --yes` again. The dashboard shows `⚠ NOT SYNCED` until you do.
+> The LaunchAgents run the **installed** binary `~/.local/bin/hq`, not the checkout. After changing the source, run the `cargo install` line again. The binary bakes in this repo's path (for `jobs.toml` and `migrated/`), so if you move the repo, reinstall; until then `hq` prints a "config not found … reinstall" error. The plists embed only the binary path, so a reinstall needs no `hq sync`.
 
 ## Adding a job
 
@@ -174,7 +176,14 @@ The log view follows the file live, with a `▸` cursor on the newest line. `↑
 
 ![log view](docs/images/log.png)
 
-The layout uses the terminal's width up to 90 columns. With four jobs, the dashboard is 21 rows tall and fits an 80×24 terminal.
+The TUI uses the full window (it runs on the terminal's alternate screen, so your scrollback is untouched on exit) and the layout is capped at 90 columns wide.
+
+**Mouse:**
+
+- **Click** a job, log line or service to select it. **Click the selected row** to activate it: a job opens its log, a log line expands or collapses, a service opens its URL.
+- **Wheel** scrolls the list, or the log (three lines per notch).
+- The **footer keys** are clickable, `Tab ▸` switches view, and in a confirm prompt you can click `Y`.
+- To select text, hold **Option** while dragging (iTerm, Ghostty and Terminal.app).
 
 ## How it works
 
@@ -182,7 +191,7 @@ The layout uses the terminal's width up to 90 columns. With four jobs, the dashb
 jobs.toml ──hq sync──▶ ~/Library/LaunchAgents/com.chngu.hq.<id>.plist
                                    │  launchd fires on StartInterval / StartCalendarInterval
                                    ▼
-                bun src/cli.ts run <id>           (the runner)
+                ~/.local/bin/hq run <id>          (the runner)
                  ├─ held?          → skip, record "paused"
                  ├─ in quiet hours → skip, record "quiet"
                  ├─ lock busy?     → skip, record "overlap"
@@ -214,13 +223,13 @@ jobs.toml ──hq sync──▶ ~/Library/LaunchAgents/com.chngu.hq.<id>.plist
 
 ## macOS permissions
 
-macOS grants privacy permissions (Bluetooth, Reminders, Calendar, Photos and so on) to the **responsible process**. Under launchd that's `bun`, not your terminal. So a job that works in your terminal can fail under hq. For example, the e-ink push fails with:
+macOS grants privacy permissions (Bluetooth, Reminders, Calendar, Photos and so on) to the **responsible process**. Under launchd that's the `hq` binary, not your terminal. So a job that works in your terminal can fail under hq. For example, the e-ink push fails with:
 
 ```
 Bluetooth access is denied by the user for the current application
 ```
 
-**Fix:** add `~/.bun/bin/bun` in System Settings → Privacy & Security → *Bluetooth* (or the relevant category) and turn it on. Reinstalling or upgrading bun can reset the grant.
+**Fix:** add `~/.local/bin/hq` in System Settings → Privacy & Security → *Bluetooth* (or the relevant category) and turn it on. Reinstalling hq can reset the grant.
 
 Another route is to have the job run its protected step through `/usr/bin/osascript`, which the system already trusts. `trml-reminders` does this for Reminders.
 
@@ -257,18 +266,31 @@ ln -s ~/Developer/potateros/homelab-hq/skills/hq-add-job ~/.claude/skills/hq-add
 |---|---|
 | `zsh: command not found: uv` (or similar) in the log | the tool is only on PATH through `~/.zshrc`; use an absolute path or install it into one of the dirs hq adds |
 | `Bluetooth access is denied …` | see [macOS permissions](#macos-permissions) |
-| `⚠ NOT SYNCED` | the plist is missing or out of date (e.g. after moving the repo or upgrading bun); press `S` |
+| `⚠ NOT SYNCED` | the plist is missing or out of date (e.g. after moving `hq` or editing a schedule); press `S` |
 | every job shows a fault with `config error` | `jobs.toml` doesn't parse; `hq status` prints the exact key |
 | a job is never `RUNNING` but keeps being skipped as `overlap` | another run still holds the lock; check `locks/<id>.lock` and `ps` for that PID |
 | nothing at all in the job's log | check `logs/_launchd.log`; the runner itself failed to start |
 | `launchctl bootstrap … failed` on sync | a plist with that label is already loaded from somewhere else; `launchctl bootout` it first |
 
+## Performance
+
+Measured against the old Bun/Ink version:
+
+| | Rust | Bun + Ink |
+|---|---|---|
+| TUI memory (RSS, idle) | 4.9–5.2 MB | 97–135 MB |
+| TUI CPU (idle) | 0.03–0.13% | 3.2–8.3% |
+| `hq run` (memory) | 4.0 MB | |
+| `hq status` | under 10 ms | |
+| binary size | 3.9 MB | |
+
 ## Development
 
 ```sh
-bun test                       # unit + CLI + TUI tests (ink-testing-library)
-bun tools/screenshots.tsx      # regenerate docs/images/*.png (needs Google Chrome)
-HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 hq    # play with the TUI without touching launchd
+cargo test --locked                  # unit, CLI and TUI tests (ratatui TestBackend)
+cargo clippy --all-targets --locked  # must be clean
+cargo run --example screenshots      # regenerate docs/images/*.png
+HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 cargo run    # play with the TUI without touching launchd
 ```
 
 Environment overrides, used by the tests and for dry runs:
@@ -285,16 +307,27 @@ Source layout:
 
 | file | role |
 |---|---|
-| `src/cli.ts` | CLI entry point and command dispatch |
-| `src/config.ts` | `jobs.toml` parsing and validation (`ConfigError`) |
-| `src/schedule.ts` | quiet windows, next-run estimates, countdowns |
-| `src/runner.ts` | `hq run`: hold, quiet hours, lock, spawn, timeouts, signals, history |
-| `src/history.ts` | SQLite run history |
-| `src/log.ts` | per-job log append, rotation, tail buffer |
-| `src/launchd.ts` | plist rendering, sync plan/apply, hold, resume, uninstall |
-| `src/snapshot.ts` | everything the dashboard shows, in one read |
-| `src/state.ts` | held jobs (`state.json`) |
-| `src/stacks.ts` | `[stacks.*]` parsing and docker compose status, stats, start/stop for the services view |
-| `src/tui/` | Ink components: `App`, `Dashboard`, `JobRow`, `DetailPanel`, `LogView`, `ServicesView`, `HelpView`, `theme` |
+| `src/main.rs` | CLI entry point and command dispatch |
+| `src/lib.rs` | library root, so `examples/screenshots.rs` and the tests reuse the modules |
+| `src/config.rs` | `jobs.toml` parsing and validation (`ConfigError`) |
+| `src/schedule.rs` | quiet windows, next-run estimates, countdowns |
+| `src/runner.rs` | `hq run`: hold, quiet hours, lock, spawn, timeouts, signals, history |
+| `src/history.rs` | SQLite run history (rusqlite) |
+| `src/log.rs` | per-job log append, rotation, tail buffer |
+| `src/launchd.rs` | plist rendering, sync plan/apply, hold, resume, uninstall |
+| `src/snapshot.rs` | everything the dashboard shows, in one read |
+| `src/state.rs` | held jobs (`state.json`) |
+| `src/stacks.rs` | `[stacks.*]` parsing and docker compose status, stats, start/stop for the services view |
+| `src/paths.rs` | every path, and the `HQ_*` overrides |
+| `src/tui/mod.rs` | event loop, app state, global keys, mouse dispatch, worker threads |
+| `src/tui/jobs.rs` | jobs view: dashboard, job rows, detail panel, sync prompt |
+| `src/tui/services.rs` | services view and the start/stop actions |
+| `src/tui/logview.rs` | full-screen log view with a line cursor |
+| `src/tui/help.rs` | per-view help screen |
+| `src/tui/theme.rs` | colours, widths and text helpers |
+| `src/tui/canvas.rs` | drawing helpers: width-clipped spans, space-between rows, rules |
+| `src/tui/testing.rs` | shared test helpers |
+| `examples/screenshots.rs` | renders the docs/images screenshots |
+| `vendor/iana-time-zone-stub` | stub that avoids linking CoreFoundation |
 
 Design history: [spec](docs/superpowers/specs/2026-10-16-hq-command-centre-design.md) and [implementation plan](docs/superpowers/plans/2026-10-16-hq-command-centre.md).
