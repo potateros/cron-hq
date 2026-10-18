@@ -139,7 +139,7 @@ hq --version              # print the installed version
 |---|---|
 | ![dashboard with a fault selected](docs/images/dashboard-fault.png) | ![help screen](docs/images/help.png) |
 
-- **Header:** the clock, then four totals across the top. SYSTEMS is the number of jobs, NOMINAL is jobs whose last run succeeded, FAULT is jobs whose last run failed or timed out, and STANDBY is jobs that are held or have never run.
+- **Header:** a JOBS / SERVICES tab bar (the active tab is highlighted; `←`/`→` or a click switches) and the clock, then four totals across the top. SYSTEMS is the number of jobs, NOMINAL is jobs whose last run succeeded, FAULT is jobs whose last run failed or timed out, and STANDBY is jobs that are held or have never run.
 - **Job rows:**
   - **Status symbol:** `◉` nominal, `◆` fault, `○` hold, `⚠` not synced.
   - **Name and right-hand status:** the countdown to the next run (`T–hh:mm:ss`), `RUNNING` while a run is in progress, `FAULT · EXIT n` or `HOLD`.
@@ -177,14 +177,13 @@ The log view follows the file live, with a `▸` cursor on the newest line. `↑
 
 ![log view](docs/images/log.png)
 
-The TUI uses the full window (it runs on the terminal's alternate screen, so your scrollback is untouched on exit) and the layout is capped at 90 columns wide.
+The TUI uses the full window (it runs on the terminal's alternate screen, so your scrollback is untouched on exit). The layout is capped at 90 columns wide but follows the terminal's height: the footer sits on the last row, the services list uses every row, and spare rows in the jobs view show more of the selected job's latest output (newest line marked `›`, earlier lines above it).
 
 **Mouse:**
 
 - **Click** a job, log line or service to select it. **Click the selected row** to activate it: a job opens its log, a log line expands or collapses, a service opens its URL.
 - **Wheel** scrolls the list, or the log (three lines per notch).
 - The **JOBS / SERVICES tabs** in the title bar, the **footer keys** and the `Tab ▸` hint are clickable, and in a confirm prompt you can click `Y`.
-- Both dashboards fill the terminal's height (the width stays capped at 90 columns): the footer sits on the last row, the services list uses every row, and spare rows in the jobs view show more of the selected job's latest output.
 - To select text, hold **Option** while dragging (iTerm, Ghostty and Terminal.app).
 
 ## How it works
