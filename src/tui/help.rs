@@ -20,6 +20,7 @@ fn sections(view: View) -> Vec<(&'static str, Vec<Row>)> {
                 ("CPU  MEM", "live usage; CPU is % of one core (can pass 100%); amber over 50% or 1 GiB", None),
                 ("O · X · Z", "open localhost:<port> · stop/start one service · stop/start the stack", None),
                 ("[stacks.x]", "dir = compose project dir; optional files = [...], env_file", None),
+                ("← → · Tab", "switch between the JOBS and SERVICES tabs (or click a tab)", None),
             ],
         )],
         View::Jobs => vec![

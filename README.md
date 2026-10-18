@@ -95,7 +95,7 @@ Any other key is an error. A config error stops every job, and each scheduled ru
 
 ### Docker stacks
 
-`[stacks.<name>]` tables list docker compose projects for the TUI's services view (`Tab`). Only the TUI reads them, so a mistake here shows as an error on that stack and never stops a job.
+`[stacks.<name>]` tables list docker compose projects for the TUI's services view (the SERVICES tab). Only the TUI reads them, so a mistake here shows as an error on that stack and never stops a job.
 
 ```toml
 [stacks.homelab]
@@ -155,13 +155,13 @@ hq --version              # print the installed version
 | `P` | hold / resume |
 | `S` | show the sync plan; `Y` applies it, any other key cancels |
 | `O` | open the job's `url` |
-| `Tab` | switch to the services view (below) |
+| `→` / `←` (or `Tab`) | switch to the SERVICES / JOBS tab |
 | `H` | help screen |
 | `Q` | quit |
 
 When stacks are configured, a `SERVICES` line under the totals shows how many containers are up and their combined CPU and memory.
 
-**Services view** (`Tab`): every service in each stack, including ones that have no container yet, with its state (`◉` running, `○` stopped or not created, `◆` unhealthy, restarting or crashed), live CPU (as % of one core, so it can pass 100%) and memory from `docker stats` (amber over 50% CPU or 1 GiB), and its first published port. Use it to find what is slowing the Mac down and switch it off.
+**Services view** (`→` or the SERVICES tab): every service in each stack, including ones that have no container yet, with its state (`◉` running, `○` stopped or not created, `◆` unhealthy, restarting or crashed), live CPU (as % of one core, so it can pass 100%) and memory from `docker stats` (amber over 50% CPU or 1 GiB), and its first published port. Use it to find what is slowing the Mac down and switch it off.
 
 | key | action |
 |---|---|
@@ -169,7 +169,7 @@ When stacks are configured, a `SERVICES` line under the totals shows how many co
 | `O` | open `http://localhost:<port>` |
 | `X` | stop the service, or start it (`docker compose up -d <service>`, which also creates it) |
 | `Z` | stop or start the whole stack; `Y` confirms |
-| `Tab` | back to jobs |
+| `←` / `→` (or `Tab`) | back to jobs |
 
 ![services view](docs/images/services.png)
 
@@ -183,7 +183,8 @@ The TUI uses the full window (it runs on the terminal's alternate screen, so you
 
 - **Click** a job, log line or service to select it. **Click the selected row** to activate it: a job opens its log, a log line expands or collapses, a service opens its URL.
 - **Wheel** scrolls the list, or the log (three lines per notch).
-- The **footer keys** are clickable, `Tab ▸` switches view, and in a confirm prompt you can click `Y`.
+- The **JOBS / SERVICES tabs** in the title bar, the **footer keys** and the `Tab ▸` hint are clickable, and in a confirm prompt you can click `Y`.
+- Both dashboards fill the terminal's height (the width stays capped at 90 columns): the footer sits on the last row, the services list uses every row, and spare rows in the jobs view show more of the selected job's latest output.
 - To select text, hold **Option** while dragging (iTerm, Ghostty and Terminal.app).
 
 ## How it works

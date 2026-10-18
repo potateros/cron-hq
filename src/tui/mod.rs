@@ -67,6 +67,8 @@ pub enum Hit {
     Confirm,
     /// The `Tab ▸` hint on the SERVICES line.
     ToggleView,
+    /// A tab in the title bar: switches to that view.
+    Tab(View),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,11 +255,18 @@ impl App {
     }
 
     fn switch_view(&mut self) {
-        self.view = match self.view {
+        let other = match self.view {
             View::Jobs => View::Services,
             View::Services => View::Jobs,
         };
-        self.refresh.stacks = true;
+        self.show_view(other);
+    }
+
+    fn show_view(&mut self, view: View) {
+        if self.view != view {
+            self.view = view;
+            self.refresh.stacks = true;
+        }
     }
 
     /// Returns false to quit.
@@ -304,9 +313,20 @@ impl App {
             }
             Mode::Dash => {}
         }
-        if ev.code == KeyCode::Tab {
-            self.switch_view();
-            return true;
+        match ev.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.switch_view();
+                return true;
+            }
+            KeyCode::Left => {
+                self.show_view(View::Jobs);
+                return true;
+            }
+            KeyCode::Right => {
+                self.show_view(View::Services);
+                return true;
+            }
+            _ => {}
         }
         match lower {
             Some('h') => {
@@ -396,6 +416,7 @@ impl App {
             }
             Some(Hit::Key(code)) => return self.handle_key(key(code), fx),
             Some(Hit::ToggleView) => return self.handle_key(key(KeyCode::Tab), fx),
+            Some(Hit::Tab(v)) => self.show_view(v),
             // A Confirm segment with no prompt open is stale.
             Some(Hit::Confirm) | None => {}
         }

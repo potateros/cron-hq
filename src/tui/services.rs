@@ -1,9 +1,9 @@
 //! The services view (port of `ServicesView.tsx` and the services parts of `App.tsx`): docker compose stacks,
 //! per-service state and usage, and the X / Z start-stop actions.
 
-use super::canvas::{between, bold, put, rule, sp, visible, Span};
+use super::canvas::{between, put, rule, sp, visible, Span};
 use super::jobs::draw_footer;
-use super::theme::{clock_line, inner_width, ACCENT, BODY, FAULT, HOLD, INDENT, MARGIN};
+use super::theme::{inner_width, ACCENT, BODY, FAULT, HOLD, INDENT, MARGIN};
 use super::{panic_text, service_key, App, Effects, Hit, LoopEvent, Mode, Msg, PendingKind};
 use crate::stacks::{
     compose_args, format_bytes, is_service_fault, is_up, last_line, service_url, short_uptime, totals, ServiceState,
@@ -17,10 +17,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
-pub const SERVICE_KEYS: &str = "↑↓ select   O open   X stop/start   Z whole stack   Tab jobs   H help   Q exit";
-
-/// Rows above and below the list in the TS layout; the list gets the rest of the terminal.
-const CHROME: usize = 15;
+pub const SERVICE_KEYS: &str = "↑↓ select   O open   X stop/start   Z whole stack   ←→ tabs   H help   Q exit";
 
 /// Heavier than this is drawn in amber so the culprits stand out.
 const HEAVY_CPU: f64 = 50.0;
@@ -176,11 +173,11 @@ pub fn draw_services(frame: &mut Frame, app: &mut App) {
     }
 
     // Vertical budget: rows used above the list, then the list, then [rule + 3 detail lines], rule, footer.
+    // The list takes every row the rest leaves, and the detail and footer sit at the bottom of the terminal.
     let head = 5 + usize::from(banner.is_some());
-    let room = rows.saturating_sub(CHROME).max(4);
     let below = rows.saturating_sub(head);
     let detail_on = current.is_some() && below.saturating_sub(6) >= 4;
-    let room = if detail_on { room.min(below - 6) } else { room.min(below.saturating_sub(2)).max(1) };
+    let room = if detail_on { below - 6 } else { below.saturating_sub(2).max(1) };
     let at = items.iter().position(|i| matches!(i, Item::Svc(_, n) if *n == selected));
     let first = match at {
         Some(at) if items.len() > room => at.saturating_sub(room / 2).min(items.len() - room),
@@ -189,7 +186,7 @@ pub fn draw_services(frame: &mut Frame, app: &mut App) {
 
     let buf = frame.buffer_mut();
     let mut y: u16 = 1; // paddingTop
-    between(buf, area, MARGIN, y, w, &[bold(sp("◢ H Q · SERVICES", ACCENT))], &[sp(clock_line(now), BODY)]);
+    super::jobs::draw_title(buf, area, y, w, super::View::Services, now, &mut hits);
     y += 1;
     if let Some(b) = &banner {
         put(buf, area, MARGIN, y, w, &[sp(b.clone(), FAULT)]);
@@ -247,6 +244,9 @@ pub fn draw_services(frame: &mut Frame, app: &mut App) {
         y += 1;
     }
 
+    // Pin the detail panel and footer to the bottom when the list is shorter than the window.
+    let tail_rows = if detail_on { 6 } else { 2 };
+    y = y.max((rows.saturating_sub(tail_rows)) as u16);
     if let (true, Some(v)) = (detail_on, current) {
         rule(buf, area, y, w);
         put(buf, area, MARGIN, y + 1, w, &[sp(format!("▸  {}", v.service.to_uppercase()), ACCENT), sp(format!(" — {}", v.image), BODY)]);
@@ -584,7 +584,7 @@ mod tests {
         let mut h = H::on_services(Fake::new(&["jellyfin"]));
         let ls = h.render();
         let f = ls.join("\n");
-        for s in ["◢ H Q · SERVICES", "UP 1/2", "LAB · 1/2 up", "url       http://localhost:8096"] {
+        for s in ["◢ H Q", " SERVICES ", "UP 1/2", "LAB · 1/2 up", "url       http://localhost:8096"] {
             assert!(f.contains(s), "{s}\n{f}");
         }
         in_order(ls.iter().find(|l| l.contains("JELLYFIN") && l.contains('◉')).unwrap(), &["◉  JELLYFIN", "up 3h", "62.0%", "1.5G", ":8096"]);
@@ -758,7 +758,7 @@ mod tests {
         let ls = h.render();
         let (x, y) = find(&ls, "↑↓ select");
         assert!(h.app.hits.iter().all(|(r, hit)| !(matches!(hit, Hit::Key(_)) && r.y == y && r.x <= x && x < r.x + r.width)));
-        h.click_on("Tab jobs");
+        h.click_on("←→ tabs");
         assert_eq!(h.app.view, View::Jobs);
         h.key(k(KeyCode::Tab));
         assert!(!h.click_on("Q exit"));
@@ -804,9 +804,11 @@ mod tests {
             h.key(k(KeyCode::Down));
         }
         let ls = h.render_size(80, 24);
-        assert!(ls.iter().any(|l| l.contains("Tab jobs")), "{}", ls.join("\n"));
+        assert!(ls[23].contains("←→ tabs"), "footer on the last row\n{}", ls.join("\n"));
         assert!(ls.iter().any(|l| l.contains("SVC15")));
-        assert_eq!(h.app.hits.iter().filter(|(_, hit)| matches!(hit, Hit::Service(_))).count(), 9);
+        // 24 rows: 5 above the list, 6 below (rule, 3 detail lines, rule, footer) leave 13 for the list.
+        let rows = h.app.hits.iter().filter(|(_, hit)| matches!(hit, Hit::Service(_))).count();
+        assert!((12..=13).contains(&rows), "{rows}");
     }
 
     #[test]
@@ -842,7 +844,7 @@ mod tests {
         t.draw(|f| draw(f, &mut app)).unwrap();
         let f = lines(t.backend().buffer()).join("\n");
         assert!(f.contains("no stacks — add [stacks.<name>] dir = \"…\" to jobs.toml"), "{f}");
-        assert!(app.hits.iter().all(|(_, h)| matches!(h, Hit::Key(_))), "no service rows to click");
+        assert!(app.hits.iter().all(|(_, h)| matches!(h, Hit::Key(_) | Hit::Tab(_))), "no service rows to click");
         let fx = Rec::default();
         for c in ['x', 'z', 'o'] {
             app.handle_key(ch(c), &fx);

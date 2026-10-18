@@ -214,6 +214,9 @@ fn buffer_to_html(buf: &Buffer, rows: u16) -> String {
             if let Color::Rgb(r, g, b) = cell.fg {
                 let _ = write!(style, "color:rgb({r},{g},{b})");
             }
+            if let Color::Rgb(r, g, b) = cell.bg {
+                let _ = write!(style, ";background:rgb({r},{g},{b})");
+            }
             if cell.modifier.contains(Modifier::BOLD) {
                 style.push_str(";font-weight:bold");
             }

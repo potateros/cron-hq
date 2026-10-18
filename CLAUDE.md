@@ -67,7 +67,7 @@ HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 cargo run   # TUI against an empty home
 - `src/stacks.rs`: `[stacks.*]` from `jobs.toml` (TUI only: config parsing accepts the table but never validates it, so a stack mistake can't stop a job). Wraps `docker compose config/ps` and `docker stats` behind an injected exec; the compose config is cached by file mtimes.
 - `src/paths.rs`: every path, with the env overrides `HQ_HOME`, `HQ_CONFIG`, `HQ_LAUNCH_AGENTS_DIR` and `HQ_MIGRATED_DIR`.
 - `src/tui/`:
-  - `mod.rs`: event loop and `App` state. Views are jobs and services (`Tab`); modes are dash, log, help, sync and stack (the `Z` confirm). Worker threads reload the snapshot every 2 s, docker state every 3 s and `docker stats` every 5 s (it takes ~2 s); the clock ticks every 1 s. A failed load shows an `ERROR —` banner and keeps the last snapshot. Also the global keys and mouse dispatch.
+  - `mod.rs`: event loop and `App` state. Views are jobs and services, shown as a tab bar in the title row (`←`/`→`, `Tab`, or click a tab); modes are dash, log, help, sync and stack (the `Z` confirm). Worker threads reload the snapshot every 2 s, docker state every 3 s and `docker stats` every 5 s (it takes ~2 s); the clock ticks every 1 s. A failed load shows an `ERROR —` banner and keeps the last snapshot. Also the global keys and mouse dispatch.
   - `jobs.rs`, `services.rs`, `logview.rs`, `help.rs`: the views.
   - `theme.rs`: colours, margins, widths and text helpers. `canvas.rs`: drawing helpers. `testing.rs`: test helpers.
 
@@ -77,7 +77,7 @@ HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 cargo run   # TUI against an empty home
 - Compact: no blank lines between rows. Four jobs fit 80×24.
 - Every row starts and ends on the divider (the `theme.rs` margin and inner-width helpers). Nothing may be wider than the divider: truncate by **display width** with the `theme.rs` / `canvas.rs` helpers (never by `chars().count()` or bytes), or clamp. The latest output wraps to at most 2 lines and ends with `...`.
 - Width is the terminal's, capped at the max width in `theme.rs` (90). The TUI uses the full window on the alternate screen.
-- **Mouse is required.** Every view registers its clickable regions (hit regions) in `App::hits` while it draws: click selects, clicking the selected row activates it (job → log, log line → expand, service → open URL), the wheel scrolls (×3 in the log), footer keys are clickable, and so are the `Tab ▸` hint and `Y` in confirm prompts. A new interactive element needs a hit region and a test.
+- **Mouse is required.** Every view registers its clickable regions (hit regions) in `App::hits` while it draws: click selects, clicking the selected row activates it (job → log, log line → expand, service → open URL), the wheel scrolls (×3 in the log), footer keys are clickable, and so are the title-bar tabs, the `Tab ▸` hint and `Y` in confirm prompts. A new interactive element needs a hit region and a test.
 - **When you add a symbol or field, add it to `help.rs`**, regenerate the screenshots and update the README.
 - TUI tests render into ratatui's `TestBackend` (100 columns) via `tui/testing.rs`. Dashboard tests assert alignment and width properties, not just text.
 

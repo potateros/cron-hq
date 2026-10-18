@@ -11,18 +11,18 @@ use crate::schedule::{describe_schedule, format_countdown};
 use crate::snapshot::{summarize, JobView};
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-pub const KEYS: &str = "↑↓ select   ⏎ logs   R run   P hold   S sync   O open   Tab services   H help   Q exit";
+pub const KEYS: &str = "↑↓ select   ⏎ logs   R run   P hold   S sync   O open   ←→ tabs   H help   Q exit";
 
-/// The key a footer segment stands for; `↑↓` is two keys, so it is not clickable.
+/// The key a footer segment stands for; `↑↓` is two keys, so it is not clickable. `←→ tabs` toggles the view.
 pub(super) fn segment_key(segment: &str) -> Option<KeyCode> {
     let first = segment.split(' ').next()?;
     match first {
         "⏎" => Some(KeyCode::Enter),
-        "Tab" => Some(KeyCode::Tab),
+        "Tab" | "←→" => Some(KeyCode::Tab),
         s if s.chars().count() == 1 && s.chars().all(|c| c.is_ascii_alphabetic()) => {
             Some(KeyCode::Char(s.chars().next()?.to_ascii_lowercase()))
         }
@@ -107,8 +107,9 @@ fn pad_end(s: &str, n: usize) -> String {
 
 type Line = (u16, Vec<Span>);
 
-/// The detail panel as lines: (x, spans).
-fn detail_lines(v: &JobView, w: u16) -> Vec<Line> {
+/// The detail panel as lines: (x, spans). The latest run's output gets up to `out_rows` rows (at least 2):
+/// the newest line, marked `›`, plus as many earlier lines of the run's tail as fit, oldest first.
+fn detail_lines(v: &JobView, w: u16, out_rows: usize) -> Vec<Line> {
     let job = &v.job;
     let mut head = vec![sp(format!("▸  {}", job.id.to_uppercase()), ACCENT)];
     if !job.description.is_empty() {
@@ -134,13 +135,31 @@ fn detail_lines(v: &JobView, w: u16) -> Vec<Line> {
     q.extend(field("timeout", pad_end(&format_seconds(job.timeout_sec), 8)));
     q.extend(field("launchd", launchd.to_string()));
     out.push((ix, q));
-    let last_line = v
+    let tail: Vec<&str> = v
         .last
         .as_ref()
         .and_then(|r| r.tail.as_deref())
-        .and_then(|t| t.split('\n').rfind(|l| !l.trim().is_empty()))
-        .unwrap_or("no output yet");
-    for (i, l) in clamp_lines(last_line, (inner as usize).saturating_sub(2), 2).iter().enumerate() {
+        .map(|t| t.split('\n').filter(|l| !l.trim().is_empty()).collect())
+        .unwrap_or_default();
+    let width = (inner as usize).saturating_sub(2);
+    let newest = clamp_lines(tail.last().copied().unwrap_or("no output yet"), width, 2);
+    // Earlier lines, newest first, while whole lines still fit above the newest one.
+    let mut earlier: Vec<Vec<String>> = Vec::new();
+    let mut left = out_rows.max(2).saturating_sub(newest.len());
+    for l in tail.iter().rev().skip(1) {
+        let rows = clamp_lines(l, width, 2);
+        if rows.len() > left {
+            break;
+        }
+        left -= rows.len();
+        earlier.push(rows);
+    }
+    for rows in earlier.iter().rev() {
+        for l in rows {
+            out.push((ix, vec![sp(format!("  {l}"), HOLD)]));
+        }
+    }
+    for (i, l) in newest.iter().enumerate() {
         out.push((ix, vec![sp(format!("{}{l}", if i > 0 { "  " } else { "› " }), BODY)]));
     }
     out
@@ -215,10 +234,50 @@ pub(super) fn draw_footer(buf: &mut ratatui::buffer::Buffer, area: Rect, y: u16,
     }
 }
 
+/// Title row shared by the jobs and services views: `◢ H Q`, a JOBS / SERVICES tab bar (active tab
+/// highlighted, each tab clickable) and the clock on the right.
+pub(super) fn draw_title(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    y: u16,
+    w: u16,
+    view: super::View,
+    now: chrono::DateTime<chrono::Local>,
+    hits: &mut Vec<(Rect, Hit)>,
+) {
+    use super::View;
+    let tab = |label: &str, on: bool| -> Span {
+        let style = if on {
+            Style::default().fg(Color::Rgb(0x0b, 0x12, 0x16)).bg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(HOLD)
+        };
+        (format!(" {label} "), style)
+    };
+    let tabs = [(View::Jobs, "JOBS"), (View::Services, "SERVICES")];
+    let mut left = vec![bold(sp("◢ H Q", ACCENT)), sp("   ", HOLD)];
+    let mut x = MARGIN + spans_width(&left) as u16;
+    for (i, (v, label)) in tabs.iter().enumerate() {
+        if i > 0 {
+            left.push(sp(" ", HOLD));
+            x += 1;
+        }
+        let t = tab(label, *v == view);
+        let tw = t.0.width() as u16;
+        if let Some(r) = visible(Rect::new(x, y, tw.min((MARGIN + w).saturating_sub(x)), 1), area) {
+            hits.push((r, Hit::Tab(*v)));
+        }
+        x += tw;
+        left.push(t);
+    }
+    between(buf, area, MARGIN, y, w, &left, &[sp(clock_line(now), BODY)]);
+}
+
 /// `HQ · JOBS`: draw the whole view and register its clickable regions.
 ///
-/// Everything above and below the job list is fixed; the sync prompt replaces the detail panel, and the job
-/// rows are windowed around the selection so the footer always keeps the last row.
+/// The view fills the terminal's height: the footer sits on the last row, and spare rows go to the detail
+/// panel (more of the latest run's output). The sync prompt replaces the detail panel, and when rows are short
+/// the job list is windowed around the selection.
 pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let w = inner_width(area.width);
@@ -246,7 +305,7 @@ pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
     let selected = app.selected;
     y += 1; // paddingTop
 
-    between(buf, area, MARGIN, y, w, &[bold(sp("◢ H Q", ACCENT))], &[sp(clock_line(now), BODY)]);
+    draw_title(buf, area, y, w, super::View::Jobs, now, &mut hits);
     y += 1;
     if let Some(e) = &snap.config_error {
         put(buf, area, MARGIN, y, w, &[sp(format!("CONFIG ERROR — {e}"), FAULT)]);
@@ -289,20 +348,24 @@ pub fn draw_jobs(frame: &mut Frame, app: &mut App) {
         Mode::Sync(res) => Some(prompt_lines(res)),
         _ => None,
     };
-    let detail = match (&prompt, snap.jobs.get(selected)) {
-        (None, Some(v)) => detail_lines(v, w),
-        (None, None) => vec![(MARGIN, vec![sp("no jobs in jobs.toml", HOLD)])],
-        _ => Vec::new(),
-    };
     let lead_rule = prompt.is_some() || !snap.jobs.is_empty();
     // Rows left for the region and the jobs: all but the closing rule and the footer.
     let rest = (area.height as usize).saturating_sub(y as usize + 2 + usize::from(lead_rule));
+    let detail = match (&prompt, snap.jobs.get(selected)) {
+        (None, Some(v)) => {
+            let base = detail_lines(v, w, 2);
+            // Whatever the full job list and the 2-row output leave over goes to more output.
+            let spare = rest.saturating_sub(2 * count + base.len());
+            if spare > 0 { detail_lines(v, w, 2 + spare) } else { base }
+        }
+        (None, None) => vec![(MARGIN, vec![sp("no jobs in jobs.toml", HOLD)])],
+        _ => Vec::new(),
+    };
     let wanted = prompt.as_ref().map_or(detail.len(), |(l, _)| l.len());
     let region = wanted.min(rest.saturating_sub(2).max(1)); // keep room for at least one job row
     let k = (rest.saturating_sub(region) / 2).clamp(1, count.max(1));
-    // When something had to give, leftover rows go to the region so the footer keeps the last row.
-    let squeezed = k < count || region < wanted;
-    let slack = if squeezed { rest.saturating_sub(region + 2 * k) } else { 0 };
+    // Rows nothing needs pad the region, so the footer always sits on the last row.
+    let slack = rest.saturating_sub(region + 2 * k);
     let start = if count > k { selected.saturating_sub(k / 2).min(count - k) } else { 0 };
 
     for (i, v) in snap.jobs.iter().enumerate().skip(start).take(k) {
@@ -493,7 +556,7 @@ mod tests {
     fn footer_keys() {
         let f = text(&mut app_with(snapshot()));
         assert!(f.contains(KEYS));
-        assert_eq!(KEYS, "↑↓ select   ⏎ logs   R run   P hold   S sync   O open   Tab services   H help   Q exit");
+        assert_eq!(KEYS, "↑↓ select   ⏎ logs   R run   P hold   S sync   O open   ←→ tabs   H help   Q exit");
     }
 
     #[test]
@@ -536,7 +599,9 @@ mod tests {
         let ls = render(&mut app_with(long_snap()));
         let i = ls.iter().position(|l| l.contains("› Traceback:")).unwrap();
         assert!(ls[i + 1].trim_end().ends_with("..."), "{}", ls[i + 1]);
-        assert!(ls[i + 2].contains("────"));
+        // Below the output there are only spare rows, then the closing rule.
+        let next = ls[i + 2..].iter().find(|l| !l.trim().is_empty()).unwrap();
+        assert!(next.contains("────"), "{next}");
     }
 
     #[test]
@@ -591,10 +656,10 @@ mod tests {
 
     #[test]
     fn services_summary_line_only_when_stacks_are_configured() {
-        assert!(!text(&mut app_with(snapshot())).contains("SERVICES"));
+        assert!(!text(&mut app_with(snapshot())).contains("up · cpu"));
         let mut a = with_services();
         let ls = render(&mut a);
-        let row = row_of(&ls, "SERVICES");
+        let row = row_of(&ls, "SERVICES 1/2");
         assert!(row.contains("SERVICES 1/2 up · cpu 0.6% · mem 499M"), "{row}");
         assert!(row.trim_end().ends_with("Tab ▸"));
     }
@@ -900,7 +965,7 @@ mod tests {
         a.handle_mouse(click(c, r), &fx);
         assert!(matches!(a.mode, Mode::Log(_)));
         a.mode = Mode::Dash;
-        let (c, r) = find(&ls, "Tab services");
+        let (c, r) = find(&ls, "←→ tabs");
         a.handle_mouse(click(c, r), &fx);
         assert_eq!(a.view, View::Services);
         a.view = View::Jobs;
@@ -909,10 +974,67 @@ mod tests {
     }
 
     #[test]
+    fn view_fills_the_height_with_the_footer_on_the_last_row() {
+        for h in [24u16, 40, 60] {
+            let ls = render_size(&mut app_with(snapshot()), 100, h);
+            assert!(ls[h as usize - 1].contains(KEYS), "height {h}\n{}", ls.join("\n"));
+        }
+    }
+
+    #[test]
+    fn tall_terminal_shows_earlier_output_lines() {
+        let mut v = views();
+        v[0].last.as_mut().unwrap().tail = Some("step 1\nstep 2\nstep 3\nstep 4\nstep 5".into());
+        let snap = crate::snapshot::Snapshot { jobs: v, ..snapshot() };
+        // 22 rows leave room for only 2 output rows: the newest line and the one before it.
+        let short = render_size(&mut app_with(snap.clone()), 100, 22).join("\n");
+        assert!(short.contains("  step 4") && short.contains("› step 5") && !short.contains("step 3"), "{short}");
+        let tall = render_size(&mut app_with(snap), 100, 40);
+        let i = tall.iter().position(|l| l.contains("  step 1")).expect("the whole tail fits");
+        for (n, row) in tall[i..i + 5].iter().enumerate() {
+            let want = if n == 4 { "› step 5".to_string() } else { format!("  step {}", n + 1) };
+            assert!(row.contains(&want), "oldest first, newest last with ›: {row}");
+        }
+    }
+
+    #[test]
+    fn tab_bar_shows_both_views_and_clicks_switch() {
+        let (mut a, fx) = (with_services(), Rec::default());
+        let ls = render(&mut a);
+        let title = row_of(&ls, "◢ H Q");
+        assert!(title.contains(" JOBS ") && title.contains(" SERVICES "), "{title}");
+        let r = ls.iter().position(|l| *l == title).unwrap() as u16;
+        let c = title.find(" SERVICES ").map(|b| title[..b].width() as u16 + 2).unwrap();
+        a.handle_mouse(click(c, r), &fx);
+        assert_eq!(a.view, View::Services);
+        a.handle_mouse(click(c, r), &fx);
+        assert_eq!(a.view, View::Services, "clicking the active tab keeps it");
+        let ls = render(&mut a);
+        let title = row_of(&ls, "◢ H Q");
+        let c = title.find(" JOBS ").map(|b| title[..b].width() as u16 + 2).unwrap();
+        a.handle_mouse(click(c, r), &fx);
+        assert_eq!(a.view, View::Jobs);
+    }
+
+    #[test]
+    fn left_right_switch_views() {
+        let (mut a, fx) = (with_services(), Rec::default());
+        a.handle_key(k(KeyCode::Right), &fx);
+        assert_eq!(a.view, View::Services);
+        a.handle_key(k(KeyCode::Right), &fx);
+        assert_eq!(a.view, View::Services, "→ on the last tab stays");
+        a.handle_key(k(KeyCode::Left), &fx);
+        assert_eq!(a.view, View::Jobs);
+        a.mode = Mode::Help;
+        a.handle_key(k(KeyCode::Right), &fx);
+        assert_eq!(a.view, View::Jobs, "arrows only switch from the dashboards");
+    }
+
+    #[test]
     fn click_tab_hint_switches_view() {
         let (mut a, fx) = (with_services(), Rec::default());
         let ls = render(&mut a);
-        let row = row_of(&ls, "SERVICES");
+        let row = row_of(&ls, "SERVICES 1/2");
         let (c, r) = find(std::slice::from_ref(&row), "Tab ▸");
         let r = ls.iter().position(|l| *l == row).unwrap() as u16 + r;
         a.handle_mouse(click(c, r), &fx);
