@@ -1,7 +1,10 @@
 [package]
 name = "hq"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
+description = "Terminal command centre for scheduled jobs on macOS (launchd + ratatui)"
+repository = "https://github.com/potateros/cron-hq"
+publish = false
 
 [dependencies]
 chrono = "0.4.45"
@@ -21,3 +24,9 @@ tempfile = "3.27.0"
 # chrono -> iana-time-zone -> CoreFoundation costs ~4.5 MB RSS per process; see the stub's docs.
 [patch.crates-io]
 iana-time-zone = { path = "vendor/iana-time-zone-stub" }
+
+# Smaller, faster binary. Keep panic = "unwind": the TUI's workers rely on catch_unwind.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

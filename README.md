@@ -128,6 +128,7 @@ hq hold <job>             # unload the agent and mark the job held
 hq resume <job>           # load it again
 hq sync [--yes]           # make ~/Library/LaunchAgents match jobs.toml (asks first unless --yes)
 hq uninstall              # remove every hq agent and restore the plists in migrated/
+hq --version              # print the installed version
 ```
 
 `hq run` exits with the job's own exit code. It exits with 124 on a timeout, 1 on a config error and 2 for an unknown job.
@@ -288,10 +289,12 @@ Measured against the old Bun/Ink version:
 
 ```sh
 cargo test --locked                  # unit, CLI and TUI tests (ratatui TestBackend)
-cargo clippy --all-targets --locked  # must be clean
+cargo clippy --all-targets --locked -- -D warnings  # must be clean (CI enforces it)
 cargo run --example screenshots      # regenerate docs/images/*.png
 HQ_HOME=$(mktemp -d) HQ_FAKE_LAUNCHCTL=1 cargo run    # play with the TUI without touching launchd
 ```
+
+CI (`.github/workflows/ci.yml`) runs clippy, the tests and a release build on macOS for every push to `main`, every pull request and every `v*` tag.
 
 Environment overrides, used by the tests and for dry runs:
 

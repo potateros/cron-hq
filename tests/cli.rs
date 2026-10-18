@@ -214,6 +214,16 @@ fn usage_and_no_command() {
 }
 
 #[test]
+fn version_flag() {
+    let fx = Fx::new();
+    for flag in ["--version", "-V"] {
+        let r = fx.hq(&[flag]);
+        assert_eq!(r.code(), 0);
+        assert_eq!(r.out(), format!("hq {}\n", env!("CARGO_PKG_VERSION")));
+    }
+}
+
+#[test]
 fn uninstall_removes_agents() {
     let fx = Fx::new();
     fx.hq(&["sync", "--yes"]);

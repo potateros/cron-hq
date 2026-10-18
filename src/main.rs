@@ -219,8 +219,11 @@ fn dispatch(args: &[String]) -> i32 {
     let rest = args.get(1..).unwrap_or(&[]);
     let flag = |f: &str| rest.iter().any(|a| a == f);
     let arg = rest.iter().find(|a| !a.starts_with('-')).map(String::as_str);
-    let paths = Paths::from_env();
     let command = args.first().map(String::as_str);
+    if matches!(command, Some("--version" | "-V")) {
+        return emit(&format!("hq {}", env!("CARGO_PKG_VERSION"))).err().unwrap_or(0);
+    }
+    let paths = Paths::from_env();
     if matches!(command, None | Some("status" | "run" | "logs" | "hold" | "resume" | "sync")) {
         if let Some(msg) = paths::missing_default_config(&paths.config, std::env::var_os("HQ_CONFIG").is_some_and(|v| !v.is_empty())) {
             if command == Some("run") {
